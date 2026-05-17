@@ -1356,9 +1356,9 @@ async function borrarTodo() {
 }
 
 /* ---------- Validación API Key Claude ---------- */
-async function validarClaveAPI(key) {
+async function validarClaveAPI(key, proxyOverride) {
   if (!key) return { ok: false, msg: 'Sin key' };
-  const proxy = await getConfig('claude_proxy');
+  const proxy = proxyOverride !== undefined ? proxyOverride : await getConfig('claude_proxy');
   try {
     const res = await fetch(proxy || 'https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -1428,7 +1428,7 @@ function mostrarConfigIA() {
       const nuevaKey = $('#cfg-key').value.trim();
       const nuevoProxy = $('#cfg-proxy').value.trim();
       if (nuevaKey) {
-        const check = await validarClaveAPI(nuevaKey);
+        const check = await validarClaveAPI(nuevaKey, nuevoProxy);
         if (!check.ok) { alert(check.msg + '\n\nLa key no se ha guardado.'); return; }
       }
       await setConfig('claude_api_key', nuevaKey);
@@ -1446,7 +1446,7 @@ async function probarKeyClaude() {
   const status = $('#cfg-status');
   status.textContent = '🔄 Comprobando...';
   status.style.color = 'var(--text-muted)';
-  const check = await validarClaveAPI(key);
+  const check = await validarClaveAPI(key, proxy);
   status.style.color = check.ok ? 'var(--success)' : 'var(--danger)';
   status.textContent = (check.ok ? '🟢 ' : '🔴 ') + check.msg;
 }
