@@ -798,8 +798,14 @@ function abrirModalCrearReserva(editId) {
       </select>
       <label>Título</label><input id="f-titulo" value="${escAttr(r.titulo || '')}">
       <label>Localizador</label><input id="f-loc" value="${escAttr(r.localizador || '')}">
-      <label>Fecha (dd/mm/aaaa)</label><input id="f-fecha" class="input-fecha" placeholder="dd/mm/aaaa" value="${escAttr(r.fecha ? fmtDate(r.fecha) : '')}">
-      <label>Hora</label><input type="time" id="f-hora" value="${escAttr(r.fecha ? horaDesdeISO(r.fecha) : '')}">
+      <div style="display:flex;gap:10px;align-items:flex-end">
+        <div style="flex:1">
+          <label>Fecha</label><input id="f-fecha" class="input-fecha" placeholder="dd/mm/aaaa" value="${escAttr(r.fecha ? fmtDate(r.fecha) : '')}">
+        </div>
+        <div style="width:110px;flex-shrink:0">
+          <label>Hora</label><input type="time" id="f-hora" value="${escAttr(r.fecha ? horaDesdeISO(r.fecha) : '')}">
+        </div>
+      </div>
       <label>Notas</label><textarea id="f-notas">${escHTML(r.notas || '')}</textarea>
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;flex-wrap:wrap"><input type="checkbox" id="f-cita" checked> 📅 Cita en calendario</label>
       <label>Adjuntar documento (opcional)</label><input type="file" id="f-adjunto">
@@ -877,8 +883,14 @@ function abrirModalCrearEvento(editId, fechaPre) {
         <option value="otros">📌 Otros</option>
       </select>
       <label>Título</label><input id="f-titulo" value="${escAttr(ev.titulo || '')}">
-      <label>Fecha (dd/mm/aaaa)</label><input id="f-fecha" class="input-fecha" placeholder="dd/mm/aaaa" value="${escAttr(fPre)}">
-      <label>Hora</label><input type="time" id="f-hora" value="${escAttr(hPre)}">
+      <div style="display:flex;gap:10px;align-items:flex-end">
+        <div style="flex:1">
+          <label>Fecha</label><input id="f-fecha" class="input-fecha" placeholder="dd/mm/aaaa" value="${escAttr(fPre)}">
+        </div>
+        <div style="width:110px;flex-shrink:0">
+          <label>Hora</label><input type="time" id="f-hora" value="${escAttr(hPre)}">
+        </div>
+      </div>
       <label>Notas</label><textarea id="f-notas">${escHTML(ev.notas || '')}</textarea>
       <label>Adjuntar archivo (opcional)</label><input type="file" id="f-adjunto">
     `, async () => {

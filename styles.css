@@ -114,6 +114,7 @@ label {
 
 input, select, textarea {
   width: 100%;
+  max-width: 100%;
   background: var(--surface-light);
   border: 1px solid #475569;
   border-radius: 10px;
@@ -121,6 +122,17 @@ input, select, textarea {
   color: var(--text);
   font-size: 1rem;
   outline: none;
+  box-sizing: border-box;
+}
+input[type="time"] {
+  width: auto;
+  min-width: 120px;
+  max-width: 100%;
+  padding: 10px 12px;
+}
+input[type="file"] {
+  padding: 8px;
+  font-size: .9rem;
 }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 textarea { min-height: 90px; resize: vertical; }
