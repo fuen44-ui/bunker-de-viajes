@@ -377,47 +377,57 @@ async function renderTab() {
 
 /* ---------- Render Calendario ---------- */
 async function renderCalendario(container) {
-  if (calendarioModo === 'mes') await renderCalendarioMes(container, calendarioFechaRef);
-  else if (calendarioModo === 'semana') await renderCalendarioSemana(container, calendarioFechaRef);
-  else if (calendarioModo === 'ano') await renderCalendarioAno(container, calendarioFechaRef);
+  try {
+    if (calendarioModo === 'mes') await renderCalendarioMes(container, calendarioFechaRef);
+    else if (calendarioModo === 'semana') await renderCalendarioSemana(container, calendarioFechaRef);
+    else if (calendarioModo === 'ano') await renderCalendarioAno(container, calendarioFechaRef);
+  } catch (e) {
+    container.innerHTML = `<div class="empty">Error: ${escHTML(e.message)}</div>`;
+    console.error(e);
+  }
 }
 
 async function renderCalendarioMes(container, refDate) {
-  const year = refDate.getFullYear();
-  const month = refDate.getMonth();
-  const firstDay = new Date(year, month, 1);
-  const lastDay = new Date(year, month + 1, 0);
-  const daysInMonth = lastDay.getDate();
-  let startDay = firstDay.getDay();
-  startDay = startDay === 0 ? 6 : startDay - 1; // 0=Lunes
+  try {
+    const year = refDate.getFullYear();
+    const month = refDate.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const daysInMonth = lastDay.getDate();
+    let startDay = firstDay.getDay();
+    startDay = startDay === 0 ? 6 : startDay - 1;
 
-  const allEvents = await db.eventos.where({ viaje_id: currentViajeId }).toArray();
-  const eventMap = {};
-  allEvents.forEach(e => {
-    const d = parseFecha(e.fecha_dia);
-    if (d && d.getFullYear() === year && d.getMonth() === month) eventMap[d.getDate()] = true;
-  });
+    const allEvents = await db.eventos.where({ viaje_id: currentViajeId }).toArray();
+    const eventMap = {};
+    allEvents.forEach(e => {
+      const d = parseFecha(e.fecha_dia);
+      if (d && d.getFullYear() === year && d.getMonth() === month) eventMap[d.getDate()] = true;
+    });
 
-  const v = await db.viajes.get(currentViajeId);
-  const diasViaje = new Set(diasRango(v.fecha_inicio, v.fecha_fin));
-  const todayStr = fechaHoy();
-  const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
-  $('#cal-titulo').textContent = `${meses[month]} ${year}`;
+    const v = await db.viajes.get(currentViajeId);
+    const diasViaje = v ? new Set(diasRango(v.fecha_inicio, v.fecha_fin)) : new Set();
+    const todayStr = fechaHoy();
+    const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+    $('#cal-titulo').textContent = `${meses[month]} ${year}`;
 
-  let html = '<div class="cal-grid">';
-  ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'].forEach(h => html += `<div class="cal-header">${h}</div>`);
-  for (let i = 0; i < startDay; i++) html += '<div class="cal-cell empty"></div>';
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dateStr = fmtDate(new Date(year, month, d));
-    const classes = ['cal-cell'];
-    if (dateStr === todayStr) classes.push('today');
-    if (eventMap[d]) classes.push('has-events');
-    if (!diasViaje.has(dateStr)) classes.push('out-range');
-    const click = diasViaje.has(dateStr) ? `onclick="abrirDia('${escAttr(dateStr)}')"` : '';
-    html += `<div class="${classes.join(' ')}" ${click}><span class="cal-num">${d}</span>${eventMap[d] ? '<span class="cal-dot"></span>' : ''}</div>`;
+    let html = '<div class="cal-grid">';
+    ['L','M','X','J','V','S','D'].forEach(h => html += `<div class="cal-header">${h}</div>`);
+    for (let i = 0; i < startDay; i++) html += '<div class="cal-cell empty"></div>';
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateStr = fmtDate(new Date(year, month, d));
+      const classes = ['cal-cell'];
+      if (dateStr === todayStr) classes.push('today');
+      if (eventMap[d]) classes.push('has-events');
+      if (!diasViaje.has(dateStr)) classes.push('out-range');
+      const click = diasViaje.has(dateStr) ? `onclick="abrirDia('${escAttr(dateStr)}')"` : '';
+      html += `<div class="${classes.join(' ')}" ${click}><span class="cal-num">${d}</span>${eventMap[d] ? '<span class="cal-dot"></span>' : ''}</div>`;
+    }
+    html += '</div>';
+    container.innerHTML = html;
+  } catch (e) {
+    container.innerHTML = `<div class="empty">Error cargando calendario: ${escHTML(e.message)}</div>`;
+    console.error(e);
   }
-  html += '</div>';
-  container.innerHTML = html;
 }
 
 async function renderCalendarioSemana(container, refDate) {

@@ -99,11 +99,23 @@
       <p>Mantén pulsada la pantalla para que no se apague</p>
     </div>
 
+    <!-- PANTALLA DE BLOQUEO PIN -->
+    <div id="pin-overlay" class="qr-overlay hidden" style="z-index:100;background:var(--bg);justify-content:center">
+      <div style="text-align:center;width:100%;max-width:320px;padding:20px">
+        <h2 style="margin-bottom:8px">🔒 Búnker de Viajes</h2>
+        <p style="color:var(--text-muted);margin-bottom:20px">Introduce tu PIN para acceder</p>
+        <input id="pin-input" type="password" inputmode="numeric" maxlength="6" placeholder="••••••" style="text-align:center;font-size:1.5rem;letter-spacing:8px;margin-bottom:16px">
+        <button class="btn btn-primary" onclick="desbloquearApp()">Desbloquear</button>
+        <p id="pin-error" style="color:var(--danger);margin-top:12px;font-size:.9rem;display:none">PIN incorrecto</p>
+      </div>
+    </div>
+
     <!-- MENU OPCIONES -->
     <div id="menu-overlay" class="modal-overlay hidden" onclick="cerrarMenu(event)">
       <div class="modal" style="border-radius:20px;margin:auto 20px;animation:none" onclick="event.stopPropagation()">
         <h2>Opciones</h2>
         <button class="btn btn-secondary" style="margin-bottom:8px" onclick="mostrarConfigIA();cerrarMenuDirecto()">🤖 Configurar Claude IA</button>
+        <button class="btn btn-secondary" style="margin-bottom:8px" onclick="mostrarConfigPIN();cerrarMenuDirecto()">🔒 Configurar PIN de acceso</button>
         <button class="btn btn-secondary" style="margin-bottom:8px" onclick="exportarTodo();cerrarMenuDirecto()">📤 Exportar backup</button>
         <button class="btn btn-secondary" style="margin-bottom:8px" onclick="document.getElementById('import-file').click();cerrarMenuDirecto()">📥 Importar backup</button>
         <button class="btn btn-secondary" style="margin-bottom:8px" onclick="document.getElementById('ics-file').click();cerrarMenuDirecto()">📅 Importar .ics</button>
