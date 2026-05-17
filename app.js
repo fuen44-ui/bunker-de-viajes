@@ -707,7 +707,7 @@ function iconoTipo(tipo) {
 /* ---------- FAB ---------- */
 function fabClick() {
   if (!currentViajeId) return abrirModalCrearViaje();
-  if (currentTab === 'agenda') return abrirModalCrearEvento();
+  if (currentTab === 'calendario') return abrirModalCrearEvento();
   if (currentTab === 'reservas') return abrirModalCrearReserva();
   if (currentTab === 'documentos') return abrirModalCrearDocumento();
   if (currentTab === 'checklist') return abrirModalCrearChecklist();
@@ -775,6 +775,14 @@ async function eliminarViaje(id) {
 }
 
 /* ---------- Reserva CRUD ---------- */
+function marcaReserva(id) { return `__RESERVA_ID__:${id}__`; }
+
+async function buscarEventoDeReserva(reservaId) {
+  const marca = marcaReserva(reservaId);
+  const all = await db.eventos.where({ viaje_id: currentViajeId }).toArray();
+  return all.find(e => (e.notas || '').includes(marca));
+}
+
 function abrirModalCrearReserva(editId) {
   const prom = editId ? db.reservas.get(editId) : Promise.resolve({});
   prom.then((r) => {
@@ -792,6 +800,8 @@ function abrirModalCrearReserva(editId) {
       <label>Fecha (dd/mm/aaaa)</label><input id="f-fecha" class="input-fecha" placeholder="dd/mm/aaaa" value="${escAttr(r.fecha ? fmtDate(r.fecha) : '')}">
       <label>Hora</label><input type="time" id="f-hora" value="${escAttr(r.fecha ? horaDesdeISO(r.fecha) : '')}">
       <label>Notas</label><textarea id="f-notas">${escHTML(r.notas || '')}</textarea>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px"><input type="checkbox" id="f-cita" checked> 📅 Crear cita en calendario</label>
+      <label>Adjuntar documento (opcional)</label><input type="file" id="f-adjunto">
     `, async () => {
       const fStr = $('#f-fecha').value;
       const hStr = $('#f-hora').value;
@@ -804,14 +814,51 @@ function abrirModalCrearReserva(editId) {
         fecha: iso,
         notas: $('#f-notas').value
       };
-      if (editId) await db.reservas.update(editId, data); else await db.reservas.add(data);
+      let reservaId = editId;
+      if (editId) {
+        await db.reservas.update(editId, data);
+      } else {
+        reservaId = await db.reservas.add(data);
+      }
+
+      // Adjuntar archivo si hay
+      const fileInput = $('#f-adjunto');
+      if (fileInput && fileInput.files && fileInput.files.length) {
+        await guardarAdjunto(null, fileInput.files[0]); // null eventoId => documento suelto
+      }
+
+      // Sincronizar evento/cita
+      if ($('#f-cita').checked && iso) {
+        const marca = marcaReserva(reservaId);
+        const evExistente = await buscarEventoDeReserva(reservaId);
+        const evData = {
+          viaje_id: currentViajeId,
+          tipo: data.tipo,
+          titulo: data.titulo,
+          fecha_hora: iso,
+          fecha_dia: fStr,
+          notas: [data.notas, marca].filter(Boolean).join(' | ')
+        };
+        if (evExistente) {
+          await db.eventos.update(evExistente.id, evData);
+        } else {
+          await db.eventos.add(evData);
+        }
+      }
+
       cerrarModalDirecto(); await renderTab();
     });
     if (r.tipo) $('#f-tipo').value = r.tipo;
   });
 }
 function editarReserva(id) { abrirModalCrearReserva(id); }
-async function eliminarReserva(id) { if (confirm('¿Eliminar reserva?')) { await db.reservas.delete(id); await renderTab(); } }
+async function eliminarReserva(id) {
+  if (!confirm('¿Eliminar reserva?')) return;
+  const ev = await buscarEventoDeReserva(id);
+  if (ev) await db.eventos.delete(ev.id);
+  await db.reservas.delete(id);
+  await renderTab();
+}
 
 /* ---------- Evento CRUD ---------- */
 function abrirModalCrearEvento(editId, fechaPre) {
@@ -1018,8 +1065,8 @@ async function guardarAdjunto(eventoId, file) {
   const docId = await db.documentos.add({
     viaje_id: currentViajeId,
     nombre: file.name,
-    tipo: 'adjunto',
-    tags: ['evento_' + eventoId],
+    tipo: eventoId ? 'adjunto' : 'reserva',
+    tags: eventoId ? ['evento_' + eventoId] : ['reserva'],
     fecha_caducidad: null,
     cifrado
   });
@@ -1033,7 +1080,7 @@ async function guardarAdjunto(eventoId, file) {
     iv
   });
 
-  await db.adjuntos.add({ evento_id: eventoId, doc_id: docId });
+  if (eventoId) await db.adjuntos.add({ evento_id: eventoId, doc_id: docId });
   return docId;
 }
 
