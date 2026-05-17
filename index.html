@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#f97316">
+  <title>Búnker de Viajes</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <header id="main-header">
+      <button id="btn-back" class="hidden">←</button>
+      <h1>🛡️ Búnker de Viajes</h1>
+      <button id="btn-menu" title="Opciones">⋮</button>
+    </header>
+
+    <main id="main">
+      <!-- HOME -->
+      <section id="vista-home">
+        <div id="lista-viajes"></div>
+        <div class="empty" id="empty-viajes">
+          <p>Sin viajes guardados.</p>
+          <p>Presiona + para crear uno.</p>
+        </div>
+        <div class="toolbar">
+          <button class="btn btn-secondary" onclick="exportarTodo()">📤 Exportar</button>
+          <button class="btn btn-secondary" onclick="document.getElementById('import-file').click()">📥 Importar</button>
+          <input type="file" id="import-file" class="hidden" accept=".json" onchange="importarTodo(this)">
+        </div>
+      </section>
+
+      <!-- VIAJE DETAIL -->
+      <section id="vista-viaje" class="hidden">
+        <div id="viaje-info" class="card" style="margin-top:0"></div>
+        <div class="tabs">
+          <button class="tab active" data-tab="agenda" onclick="cambiarTab('agenda')">📅 Agenda</button>
+          <button class="tab" data-tab="reservas" onclick="cambiarTab('reservas')">🎫 Reservas</button>
+          <button class="tab" data-tab="documentos" onclick="cambiarTab('documentos')">📁 Docs</button>
+          <button class="tab" data-tab="checklist" onclick="cambiarTab('checklist')">✅ Checklist</button>
+        </div>
+        <div id="tab-content"></div>
+      </section>
+    </main>
+
+    <!-- NAVEGACIÓN INFERIOR -->
+    <nav class="bottom-nav hidden" id="bottom-nav">
+      <button class="active" onclick="irHome()"><span class="emoji">🏠</span>Inicio</button>
+      <button onclick="mostrarConfigIA()"><span class="emoji">🤖</span>Claude</button>
+      <button onclick="mostrarAyuda()"><span class="emoji">❓</span>Ayuda</button>
+    </nav>
+
+    <!-- FAB -->
+    <button id="fab" onclick="fabClick()">+</button>
+
+    <!-- MODAL GENÉRICO -->
+    <div id="modal" class="modal-overlay hidden" onclick="cerrarModal(event)">
+      <div class="modal" onclick="event.stopPropagation()">
+        <h2 id="modal-titulo">Nuevo</h2>
+        <div id="modal-body"></div>
+        <div style="display:flex;gap:10px;margin-top:16px">
+          <button class="btn btn-secondary" onclick="cerrarModalDirecto()">Cancelar</button>
+          <button class="btn btn-primary" id="modal-ok" onclick="modalConfirmar()">Guardar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- QR FULLSCREEN -->
+    <div id="qr-modal" class="qr-overlay hidden" onclick="cerrarQR()">
+      <button class="close-qr" onclick="cerrarQR()">✕</button>
+      <h2 id="qr-titulo">Código QR</h2>
+      <canvas id="qr-canvas"></canvas>
+      <p>Mantén pulsada la pantalla para que no se apague</p>
+    </div>
+
+    <!-- MENU OPCIONES -->
+    <div id="menu-overlay" class="modal-overlay hidden" onclick="cerrarMenu(event)">
+      <div class="modal" style="border-radius:20px;margin:auto 20px;animation:none" onclick="event.stopPropagation()">
+        <h2>Opciones</h2>
+        <button class="btn btn-secondary" style="margin-bottom:8px" onclick="mostrarConfigIA();cerrarMenuDirecto()">🤖 Configurar Claude IA</button>
+        <button class="btn btn-secondary" style="margin-bottom:8px" onclick="exportarTodo();cerrarMenuDirecto()">📤 Exportar backup</button>
+        <button class="btn btn-secondary" style="margin-bottom:8px" onclick="document.getElementById('import-file').click();cerrarMenuDirecto()">📥 Importar backup</button>
+        <button class="btn btn-danger" onclick="borrarTodo();cerrarMenuDirecto()">🗑️ Borrar todos los datos</button>
+        <button class="btn btn-secondary" style="margin-top:8px" onclick="cerrarMenuDirecto()">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/dexie@3.2.4/dist/dexie.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(console.error);
+    }
+  </script>
+</body>
+</html>

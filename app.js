@@ -1,0 +1,877 @@
+/* ===== BÚNKER DE VIAJES - APP CORE v2 ===== */
+
+/* ---------- Estado ---------- */
+let currentViajeId = null;
+let currentTab = 'agenda';
+let masterPassword = '';
+let modalConfirmFn = null;
+let wakeLockObj = null;
+
+const $ = (sel) => document.querySelector(sel);
+const escHTML = (s) => (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const escAttr = (s) => (s || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'\\"');
+
+/* ---------- Fechas: dd/mm/aaaa ---------- */
+const RE_FECHA = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/;
+
+function parseFecha(str) {
+  if (!str) return null;
+  const m = str.match(RE_FECHA);
+  if (!m) return null;
+  const d = parseInt(m[1], 10), mo = parseInt(m[2], 10), y = parseInt(m[3], 10);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const date = new Date(y, mo - 1, d, 12, 0, 0);
+  if (date.getFullYear() !== y || date.getMonth() !== mo - 1 || date.getDate() !== d) return null;
+  return date;
+}
+
+function fmtDate(d) {
+  if (!d) return '';
+  const date = d instanceof Date ? d : new Date(d);
+  if (isNaN(date)) return String(d);
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  return `${day}/${month}/${year}`;
+}
+
+function fechaHoy() {
+  const d = new Date();
+  d.setHours(12,0,0,0);
+  return fmtDate(d);
+}
+
+function diasRango(inicioStr, finStr) {
+  const ini = parseFecha(inicioStr);
+  const fin = parseFecha(finStr);
+  if (!ini || !fin || ini > fin) return [];
+  const res = [];
+  const cur = new Date(ini);
+  while (cur <= fin) {
+    res.push(fmtDate(cur));
+    cur.setDate(cur.getDate() + 1);
+  }
+  return res;
+}
+
+function diaSemana(str) {
+  const d = parseFecha(str);
+  if (!d) return '';
+  const dias = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+  return dias[d.getDay()];
+}
+
+function fechaHoraToISO(fechaStr, horaStr) {
+  const d = parseFecha(fechaStr);
+  if (!d) return null;
+  const [h, m] = (horaStr || '00:00').split(':').map(Number);
+  d.setHours(h || 0, m || 0, 0, 0);
+  return d.toISOString();
+}
+
+function horaDesdeISO(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  return d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+}
+
+/* ---------- Base de datos ---------- */
+const db = new Dexie('BunkerViajes');
+db.version(2).stores({
+  viajes: '++id, destino, fecha_inicio, fecha_fin, estado, creado',
+  reservas: '++id, viaje_id, tipo, titulo, localizador, fecha',
+  eventos: '++id, viaje_id, fecha_hora, tipo, titulo, [viaje_id+fecha_hora]',
+  agenda_dias: '++id, viaje_id, fecha, [viaje_id+fecha]',
+  puntos_interes: '++id, viaje_id, fecha, nombre, tipo',
+  documentos: '++id, viaje_id, nombre, tipo, tags, fecha_caducidad, cifrado',
+  archivos: '++id, doc_id, nombre, mimeType',
+  checklists: '++id, viaje_id, categoria, texto, completado, orden',
+  config: 'clave'
+});
+
+/* ---------- Config ---------- */
+async function getConfig(k) { const r = await db.config.get(k); return r ? r.valor : undefined; }
+async function setConfig(k, v) { await db.config.put({ clave: k, valor: v }); }
+
+/* ---------- Criptografía ---------- */
+async function deriveKey(password, salt) {
+  const enc = new TextEncoder();
+  const base = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    base,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function encryptBuffer(buffer, password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(password, salt);
+  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, buffer);
+  return { salt: Array.from(salt), iv: Array.from(iv), data: new Uint8Array(encrypted) };
+}
+
+async function decryptBuffer(encryptedUint8, saltArr, ivArr, password) {
+  const salt = new Uint8Array(saltArr);
+  const iv = new Uint8Array(ivArr);
+  const key = await deriveKey(password, salt);
+  const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, encryptedUint8);
+  return decrypted;
+}
+
+function ensurePassword() {
+  if (!masterPassword) {
+    const p = prompt('Establece una contraseña maestra para cifrar documentos:');
+    if (!p) throw new Error('Contraseña requerida');
+    masterPassword = p;
+  }
+  return masterPassword;
+}
+
+/* ---------- Claude API ---------- */
+async function llamarClaude(contentBlocks, max_tokens = 1200) {
+  const apiKey = await getConfig('claude_api_key');
+  const model = await getConfig('claude_model') || 'claude-3-haiku-20240307';
+  if (!apiKey) throw new Error('Configura tu API key de Claude primero');
+
+  const body = {
+    model,
+    max_tokens,
+    messages: [{ role: 'user', content: contentBlocks }]
+  };
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!res.ok) {
+    let errTxt = '';
+    try { const e = await res.json(); errTxt = JSON.stringify(e.error || e); } catch { errTxt = await res.text(); }
+    throw new Error(`Claude HTTP ${res.status}: ${errTxt}`);
+  }
+
+  const data = await res.json();
+  return data.content?.[0]?.text || '';
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onloadend = () => resolve(r.result.split(',')[1]);
+    r.onerror = reject;
+    r.readAsDataURL(blob);
+  });
+}
+
+async function analizarDocumentoIA(docId) {
+  const doc = await db.documentos.get(docId);
+  const arch = await db.archivos.where({ doc_id: docId }).first();
+  if (!arch) { alert('Archivo no encontrado'); return; }
+
+  let blob = arch.blob;
+  if (doc.cifrado) {
+    const pw = prompt('Este documento está cifrado. Introduce contraseña maestra para analizar:');
+    if (!pw) return;
+    try {
+      const dec = await decryptBuffer(arch.blob, arch.salt, arch.iv, pw);
+      blob = new Uint8Array(dec);
+    } catch (e) { alert('Contraseña incorrecta'); return; }
+  }
+
+  const base64 = await blobToBase64(new Blob([blob], { type: arch.mimeType }));
+  const mediaType = arch.mimeType;
+
+  let content = [];
+  if (mediaType.startsWith('image/')) {
+    content.push({ type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } });
+  } else if (mediaType === 'application/pdf') {
+    content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } });
+  } else {
+    alert('Solo imágenes y PDFs pueden analizarse automáticamente. Para otros archivos, copia el texto manualmente.');
+    return;
+  }
+
+  content.push({
+    type: 'text',
+    text: 'Eres un asistente de viajes. Extrae la información clave de este documento (billete, reserva, seguro, etc) y responde ÚNICAMENTE con un objeto JSON sin markdown, con estas claves: tipo (vuelo/hotel/tren/bus/barco/actividad/seguro/otro), titulo, localizador, fecha (dd/mm/aaaa), hora (HH:MM), origen, destino, notas_adicionales. Si algún dato no aparece, usa null.'
+  });
+
+  try {
+    const texto = await llamarClaude(content, 1200);
+    const jsonMatch = texto.match(/\{[\s\S]*\}/);
+    const datos = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(texto);
+
+    abrirModal('Resultado del análisis', `
+      <label>Tipo</label><input id="ia-tipo" value="${escAttr(datos.tipo || 'otro')}">
+      <label>Título</label><input id="ia-titulo" value="${escAttr(datos.titulo || doc.nombre)}">
+      <label>Localizador</label><input id="ia-loc" value="${escAttr(datos.localizador || '')}">
+      <label>Fecha</label><input id="ia-fecha" class="input-fecha" placeholder="dd/mm/aaaa" value="${escAttr(datos.fecha || '')}">
+      <label>Hora</label><input id="ia-hora" type="time" value="${escAttr(datos.hora || '')}">
+      <label>Origen</label><input id="ia-origen" value="${escAttr(datos.origen || '')}">
+      <label>Destino</label><input id="ia-destino" value="${escAttr(datos.destino || '')}">
+      <label>Notas</label><textarea id="ia-notas">${escHTML(datos.notas_adicionales || '')}</textarea>
+      <p style="font-size:.8rem;color:var(--text-muted)">Revisa los datos antes de guardar.</p>
+    `, async () => {
+      const fechaStr = $('#ia-fecha').value;
+      const horaStr = $('#ia-hora').value;
+      const iso = fechaHoraToISO(fechaStr, horaStr);
+      await db.reservas.add({
+        viaje_id: currentViajeId,
+        tipo: $('#ia-tipo').value || 'otros',
+        titulo: $('#ia-titulo').value || 'Sin título',
+        localizador: $('#ia-loc').value,
+        fecha: iso,
+        notas: $('#ia-notas').value
+      });
+      if (iso) {
+        await db.eventos.add({
+          viaje_id: currentViajeId,
+          fecha_hora: iso,
+          fecha_dia: fechaStr,
+          tipo: $('#ia-tipo').value || 'otros',
+          titulo: $('#ia-titulo').value || 'Sin título',
+          notas: $('#ia-notas').value
+        });
+      }
+      cerrarModalDirecto();
+      await renderTab();
+    });
+  } catch (e) {
+    alert('Error analizando: ' + e.message);
+    console.error(e);
+  }
+}
+
+async function resumirDiaIA(fechaStr) {
+  const v = await db.viajes.get(currentViajeId);
+  const eventos = await db.eventos.where({ viaje_id: currentViajeId, fecha_dia: fechaStr }).sortBy('fecha_hora');
+  const pois = await db.puntos_interes.where({ viaje_id: currentViajeId, fecha: fechaStr }).toArray();
+  const ag = await db.agenda_dias.where({ viaje_id: currentViajeId, fecha: fechaStr }).first();
+
+  const promptText = [
+    `Eres un asistente de viajes experto.`,
+    `Viaje a ${v.destino}.`,
+    `Día ${fechaStr} (${diaSemana(fechaStr)}).`,
+    ag?.alojamiento ? `Alojamiento: ${ag.alojamiento}.` : 'Sin alojamiento registrado.',
+    eventos.length ? `Eventos del día:\n${eventos.map(e => `- ${horaDesdeISO(e.fecha_hora)}: ${e.titulo} (${e.tipo})`).join('\n')}` : 'Sin eventos programados.',
+    pois.length ? `Lugares ya planeados:\n${pois.map(p => `- ${p.nombre}`).join('\n')}` : '',
+    `Genera un resumen breve (máximo 120 palabras) con recomendaciones prácticas, lugares para comer cerca, y consejos útiles para ese día. Responde solo con el texto del resumen, sin JSON ni markdown.`
+  ].join('\n');
+
+  try {
+    const resumen = await llamarClaude([{ type: 'text', text: promptText }], 800);
+    await db.agenda_dias.put({
+      viaje_id: currentViajeId,
+      fecha: fechaStr,
+      alojamiento: ag?.alojamiento || '',
+      resumen_ia: resumen.trim()
+    });
+    await renderTab();
+  } catch (e) {
+    alert('Error IA: ' + e.message);
+  }
+}
+
+/* ---------- Navegación ---------- */
+function irHome() {
+  currentViajeId = null;
+  currentTab = 'agenda';
+  $('#vista-home').classList.remove('hidden');
+  $('#vista-viaje').classList.add('hidden');
+  $('#bottom-nav').classList.add('hidden');
+  $('#btn-back').classList.add('hidden');
+  $('#fab').style.bottom = '78px';
+  renderHome();
+}
+
+async function abrirViaje(id) {
+  currentViajeId = id;
+  currentTab = 'agenda';
+  $('#vista-home').classList.add('hidden');
+  $('#vista-viaje').classList.remove('hidden');
+  $('#bottom-nav').classList.remove('hidden');
+  $('#btn-back').classList.remove('hidden');
+  $('#fab').style.bottom = '78px';
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'agenda'));
+  await renderViajeInfo();
+  await renderTab();
+}
+
+function cambiarTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  renderTab();
+}
+
+/* ---------- Render Home ---------- */
+async function renderHome() {
+  const lista = $('#lista-viajes');
+  const viajes = await db.viajes.orderBy('creado').reverse().toArray();
+  if (!viajes.length) {
+    lista.innerHTML = '';
+    $('#empty-viajes').classList.remove('hidden');
+    return;
+  }
+  $('#empty-viajes').classList.add('hidden');
+  lista.innerHTML = viajes.map((v) => `
+    <div class="card" onclick="abrirViaje(${v.id})" style="cursor:pointer">
+      <h3>✈️ ${escHTML(v.destino)}</h3>
+      <p>${escHTML(v.fecha_inicio)} → ${escHTML(v.fecha_fin)} <span class="badge" style="margin-left:6px">${escHTML(v.estado || 'Planificado')}</span></p>
+      <div class="actions" onclick="event.stopPropagation()">
+        <button class="btn btn-sm btn-secondary" onclick="editarViaje(${v.id})">✏️ Editar</button>
+        <button class="btn btn-sm btn-danger" onclick="eliminarViaje(${v.id})">🗑️</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+/* ---------- Render Viaje Info ---------- */
+async function renderViajeInfo() {
+  const v = await db.viajes.get(currentViajeId);
+  if (!v) return irHome();
+  $('#viaje-info').innerHTML = `
+    <h2>✈️ ${escHTML(v.destino)}</h2>
+    <p style="color:var(--text-muted);margin:4px 0 0">${escHTML(v.fecha_inicio)} → ${escHTML(v.fecha_fin)}</p>
+    ${v.notas ? `<p style="margin-top:8px;font-size:.9rem">${escHTML(v.notas)}</p>` : ''}
+  `;
+}
+
+/* ---------- Render Tabs ---------- */
+async function renderTab() {
+  const container = $('#tab-content');
+  container.innerHTML = '<p style="color:var(--text-muted)">Cargando…</p>';
+  if (currentTab === 'agenda') await renderAgenda(container);
+  else if (currentTab === 'reservas') await renderReservas(container);
+  else if (currentTab === 'documentos') await renderDocumentos(container);
+  else if (currentTab === 'checklist') await renderChecklist(container);
+}
+
+/* ---------- Render Agenda ---------- */
+async function renderAgenda(container) {
+  const v = await db.viajes.get(currentViajeId);
+  const dias = diasRango(v.fecha_inicio, v.fecha_fin);
+  if (!dias.length) {
+    container.innerHTML = '<div class="empty">Define las fechas del viaje para ver la agenda.</div>';
+    return;
+  }
+
+  const eventosAll = await db.eventos.where({ viaje_id: currentViajeId }).sortBy('fecha_hora');
+  const eventos = eventosAll; // filtrado por día más abajo
+  const pois = await db.puntos_interes.where({ viaje_id: currentViajeId }).toArray();
+  const agendaDias = await db.agenda_dias.where({ viaje_id: currentViajeId }).toArray();
+  const mapAgenda = Object.fromEntries(agendaDias.map(d => [d.fecha, d]));
+
+  container.innerHTML = '';
+  for (const fechaStr of dias) {
+    const evs = eventos.filter(e => e.fecha_dia === fechaStr);
+    const ps = pois.filter(p => p.fecha === fechaStr);
+    const ag = mapAgenda[fechaStr];
+
+    const timeline = evs.length ? `<div class="timeline">${evs.map(e => `
+      <div class="timeline-item">
+        <div class="hora">${escHTML(horaDesdeISO(e.fecha_hora))}</div>
+        <div class="txt">${iconoTipo(e.tipo)} ${escHTML(e.titulo)} ${e.notas ? `<span style="color:var(--text-muted);font-size:.8rem">(${escHTML(e.notas)})</span>` : ''}</div>
+      </div>
+    `).join('')}</div>` : '<p style="color:var(--text-muted);font-size:.85rem">Sin eventos programados.</p>';
+
+    const poisHtml = ps.length ? `<div style="margin-top:10px"><strong style="font-size:.8rem;color:var(--text-muted)">📍 Para ver / visitar</strong><div style="margin-top:4px">${ps.map(p => `<span class="poi-chip">${escHTML(p.nombre)} <button style="background:transparent;border:none;color:var(--danger);padding:0 0 0 4px;cursor:pointer" onclick="eliminarPOI(${p.id})">✕</button></span>`).join('')}</div></div>` : '';
+
+    const resumenHtml = ag?.resumen_ia ? `<div class="resumen-ia"><strong>🤖 Resumen IA</strong><br>${escHTML(ag.resumen_ia)}</div>` : '';
+
+    const html = `
+      <div class="day-card">
+        <div class="day-header">
+          <h4>📅 ${escHTML(diaSemana(fechaStr))} <span style="font-weight:400">${escHTML(fechaStr)}</span></h4>
+          <button class="btn btn-sm btn-secondary" onclick="editarAlojamiento('${escAttr(fechaStr)}')">🏨 ${escHTML(ag?.alojamiento || 'Añadir alojamiento')}</button>
+        </div>
+        <div class="day-body">
+          ${timeline}
+          ${poisHtml}
+          ${resumenHtml}
+          <div class="toolbar" style="margin-top:10px;margin-bottom:0">
+            <button class="btn btn-sm btn-secondary" onclick="abrirModalCrearEvento(null,'${escAttr(fechaStr)}')">+ Evento</button>
+            <button class="btn btn-sm btn-secondary" onclick="abrirModalCrearPOI('${escAttr(fechaStr)}')">+ Lugar</button>
+            <button class="btn btn-sm btn-info" onclick="resumirDiaIA('${escAttr(fechaStr)}')">🤖 Resumir</button>
+          </div>
+        </div>
+      </div>
+    `;
+    container.insertAdjacentHTML('beforeend', html);
+  }
+}
+
+/* ---------- Render Reservas ---------- */
+async function renderReservas(container) {
+  const rows = await db.reservas.where({ viaje_id: currentViajeId }).sortBy('fecha');
+  if (!rows.length) { container.innerHTML = '<div class="empty">Sin reservas. Pulsa + para añadir.</div>'; return; }
+  container.innerHTML = rows.map((r) => `
+    <div class="item">
+      <div class="icon">${iconoTipo(r.tipo)}</div>
+      <div class="body">
+        <p class="title">${escHTML(r.titulo || r.tipo)}</p>
+        <p class="meta">${r.localizador ? 'Loc: ' + escHTML(r.localizador) + ' · ' : ''}${escHTML(fmtDate(r.fecha))} ${escHTML(horaDesdeISO(r.fecha))}</p>
+      </div>
+      <div class="right">
+        ${r.localizador ? `<button class="btn btn-sm btn-secondary" onclick="mostrarQR('${escAttr(r.localizador)}','${escAttr(r.titulo || r.tipo)}')">QR</button>` : ''}
+        <button class="btn btn-sm btn-secondary" onclick="editarReserva(${r.id})">✏️</button>
+        <button class="btn btn-sm btn-danger" onclick="eliminarReserva(${r.id})">✕</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+/* ---------- Render Documentos ---------- */
+async function renderDocumentos(container) {
+  const docs = await db.documentos.where({ viaje_id: currentViajeId }).toArray();
+  if (!docs.length) { container.innerHTML = '<div class="empty">Sin documentos. Pulsa + para adjuntar.</div>'; return; }
+  container.innerHTML = docs.map((d) => `
+    <div class="item">
+      <div class="icon">📄</div>
+      <div class="body">
+        <p class="title">${escHTML(d.nombre)} ${d.cifrado ? '🔒' : ''}</p>
+        <p class="meta">${escHTML(d.tipo)}${d.fecha_caducidad ? ' · Cad: ' + escHTML(d.fecha_caducidad) : ''}</p>
+      </div>
+      <div class="right">
+        <button class="btn btn-sm btn-info" onclick="analizarDocumentoIA(${d.id})">🤖</button>
+        <button class="btn btn-sm btn-secondary" onclick="descargarDocumento(${d.id})">⬇️</button>
+        <button class="btn btn-sm btn-danger" onclick="eliminarDocumento(${d.id})">✕</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+/* ---------- Render Checklist ---------- */
+async function renderChecklist(container) {
+  const rows = await db.checklists.where({ viaje_id: currentViajeId }).sortBy('orden');
+  if (!rows.length) { container.innerHTML = '<div class="empty">Lista vacía. Pulsa + para añadir ítems.</div>'; return; }
+  container.innerHTML = rows.map((c) => `
+    <div class="item check-item ${c.completado ? 'completed' : ''}">
+      <input type="checkbox" ${c.completado ? 'checked' : ''} onchange="toggleChecklist(${c.id},this.checked)">
+      <div class="body">
+        <p class="title">${escHTML(c.texto)}</p>
+        <p class="meta">${escHTML(c.categoria || 'General')}</p>
+      </div>
+      <div class="right">
+        <button class="btn btn-sm btn-danger" onclick="eliminarChecklist(${c.id})">✕</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function iconoTipo(tipo) {
+  const map = { vuelo: '✈️', hotel: '🏨', tren: '🚆', bus: '🚌', barco: '⛴️', coche: '🚗', actividad: '🎯', restaurante: '🍽️', seguro: '🛡️', pasaporte: '🛂', dni: '🆔', visado: '🛂', otros: '📌' };
+  return map[(tipo || '').toLowerCase()] || '📌';
+}
+
+/* ---------- FAB ---------- */
+function fabClick() {
+  if (!currentViajeId) return abrirModalCrearViaje();
+  if (currentTab === 'agenda') return abrirModalCrearEvento();
+  if (currentTab === 'reservas') return abrirModalCrearReserva();
+  if (currentTab === 'documentos') return abrirModalCrearDocumento();
+  if (currentTab === 'checklist') return abrirModalCrearChecklist();
+}
+
+/* ---------- Modales genéricos ---------- */
+function abrirModal(titulo, html, onConfirm) {
+  $('#modal-titulo').textContent = titulo;
+  $('#modal-body').innerHTML = html;
+  $('#modal').classList.remove('hidden');
+  modalConfirmFn = onConfirm;
+}
+function cerrarModalDirecto() { $('#modal').classList.add('hidden'); modalConfirmFn = null; }
+function modalConfirmar() { if (modalConfirmFn) modalConfirmFn(); }
+function cerrarModal(ev) { if (ev.target === $('#modal')) cerrarModalDirecto(); }
+
+/* ---------- Viaje CRUD ---------- */
+function abrirModalCrearViaje(editId) {
+  const esEdit = !!editId;
+  const prom = esEdit ? db.viajes.get(editId) : Promise.resolve({});
+  prom.then((v) => {
+    abrirModal(esEdit ? 'Editar viaje' : 'Nuevo viaje', `
+      <label>Destino</label><input id="f-destino" value="${escAttr(v.destino || '')}">
+      <label>Inicio (dd/mm/aaaa)</label><input id="f-inicio" class="input-fecha" placeholder="dd/mm/aaaa" value="${escAttr(v.fecha_inicio || '')}">
+      <label>Fin (dd/mm/aaaa)</label><input id="f-fin" class="input-fecha" placeholder="dd/mm/aaaa" value="${escAttr(v.fecha_fin || '')}">
+      <label>Estado</label>
+      <select id="f-estado">
+        <option value="Planificado" ${v.estado === 'Planificado' ? 'selected' : ''}>Planificado</option>
+        <option value="En curso" ${v.estado === 'En curso' ? 'selected' : ''}>En curso</option>
+        <option value="Finalizado" ${v.estado === 'Finalizado' ? 'selected' : ''}>Finalizado</option>
+      </select>
+      <label>Notas</label><textarea id="f-notas">${escHTML(v.notas || '')}</textarea>
+    `, async () => {
+      const ini = $('#f-inicio').value;
+      const fin = $('#f-fin').value;
+      if (!parseFecha(ini) || !parseFecha(fin)) { alert('Formato de fecha inválido. Usa dd/mm/aaaa'); return; }
+      const data = {
+        destino: $('#f-destino').value,
+        fecha_inicio: ini,
+        fecha_fin: fin,
+        estado: $('#f-estado').value,
+        notas: $('#f-notas').value,
+        creado: v.creado || Date.now()
+      };
+      if (esEdit) await db.viajes.update(editId, data); else await db.viajes.add(data);
+      cerrarModalDirecto();
+      if (esEdit && currentViajeId) { await renderViajeInfo(); await renderTab(); }
+      else renderHome();
+    });
+  });
+}
+function editarViaje(id) { abrirModalCrearViaje(id); }
+async function eliminarViaje(id) {
+  if (!confirm('¿Eliminar viaje y TODO su contenido?')) return;
+  await db.viajes.delete(id);
+  await db.reservas.where({ viaje_id: id }).delete();
+  await db.eventos.where({ viaje_id: id }).delete();
+  await db.checklists.where({ viaje_id: id }).delete();
+  await db.agenda_dias.where({ viaje_id: id }).delete();
+  await db.puntos_interes.where({ viaje_id: id }).delete();
+  const docs = await db.documentos.where({ viaje_id: id }).toArray();
+  for (const d of docs) { await db.archivos.where({ doc_id: d.id }).delete(); }
+  await db.documentos.where({ viaje_id: id }).delete();
+  renderHome();
+}
+
+/* ---------- Reserva CRUD ---------- */
+function abrirModalCrearReserva(editId) {
+  const prom = editId ? db.reservas.get(editId) : Promise.resolve({});
+  prom.then((r) => {
+    abrirModal(editId ? 'Editar reserva' : 'Nueva reserva', `
+      <label>Tipo</label>
+      <select id="f-tipo">
+        <option value="vuelo">✈️ Vuelo</option><option value="hotel">🏨 Hotel</option>
+        <option value="tren">🚆 Tren</option><option value="bus">🚌 Bus</option>
+        <option value="barco">⛴️ Barco</option><option value="coche">🚗 Coche</option>
+        <option value="actividad">🎯 Actividad</option><option value="restaurante">🍽️ Restaurante</option>
+        <option value="otros">📌 Otros</option>
+      </select>
+      <label>Título</label><input id="f-titulo" value="${escAttr(r.titulo || '')}">
+      <label>Localizador</label><input id="f-loc" value="${escAttr(r.localizador || '')}">
+      <label>Fecha (dd/mm/aaaa)</label><input id="f-fecha" class="input-fecha" placeholder="dd/mm/aaaa" value="${escAttr(r.fecha ? fmtDate(r.fecha) : '')}">
+      <label>Hora</label><input type="time" id="f-hora" value="${escAttr(r.fecha ? horaDesdeISO(r.fecha) : '')}">
+      <label>Notas</label><textarea id="f-notas">${escHTML(r.notas || '')}</textarea>
+    `, async () => {
+      const fStr = $('#f-fecha').value;
+      const hStr = $('#f-hora').value;
+      const iso = fechaHoraToISO(fStr, hStr);
+      const data = {
+        viaje_id: currentViajeId,
+        tipo: $('#f-tipo').value,
+        titulo: $('#f-titulo').value,
+        localizador: $('#f-loc').value,
+        fecha: iso,
+        notas: $('#f-notas').value
+      };
+      if (editId) await db.reservas.update(editId, data); else await db.reservas.add(data);
+      cerrarModalDirecto(); await renderTab();
+    });
+    if (r.tipo) $('#f-tipo').value = r.tipo;
+  });
+}
+function editarReserva(id) { abrirModalCrearReserva(id); }
+async function eliminarReserva(id) { if (confirm('¿Eliminar reserva?')) { await db.reservas.delete(id); await renderTab(); } }
+
+/* ---------- Evento CRUD ---------- */
+function abrirModalCrearEvento(editId, fechaPre) {
+  const prom = editId ? db.eventos.get(editId) : Promise.resolve({});
+  prom.then((ev) => {
+    const fPre = fechaPre || (ev.fecha_dia || '');
+    const hPre = ev.fecha_hora ? horaDesdeISO(ev.fecha_hora) : '';
+    abrirModal(editId ? 'Editar evento' : 'Nuevo evento', `
+      <label>Tipo</label>
+      <select id="f-tipo">
+        <option value="vuelo">✈️ Vuelo</option><option value="hotel">🏨 Hotel</option>
+        <option value="tren">🚆 Tren</option><option value="bus">🚌 Bus</option>
+        <option value="actividad">🎯 Actividad</option><option value="restaurante">🍽️ Restaurante</option>
+        <option value="otros">📌 Otros</option>
+      </select>
+      <label>Título</label><input id="f-titulo" value="${escAttr(ev.titulo || '')}">
+      <label>Fecha (dd/mm/aaaa)</label><input id="f-fecha" class="input-fecha" placeholder="dd/mm/aaaa" value="${escAttr(fPre)}">
+      <label>Hora</label><input type="time" id="f-hora" value="${escAttr(hPre)}">
+      <label>Notas</label><textarea id="f-notas">${escHTML(ev.notas || '')}</textarea>
+    `, async () => {
+      const fStr = $('#f-fecha').value;
+      const hStr = $('#f-hora').value;
+      if (!parseFecha(fStr)) { alert('Fecha inválida. Usa dd/mm/aaaa'); return; }
+      const iso = fechaHoraToISO(fStr, hStr);
+      const data = {
+        viaje_id: currentViajeId,
+        tipo: $('#f-tipo').value,
+        titulo: $('#f-titulo').value,
+        fecha_hora: iso,
+        fecha_dia: fStr,
+        notas: $('#f-notas').value
+      };
+      if (editId) await db.eventos.update(editId, data); else await db.eventos.add(data);
+      cerrarModalDirecto(); await renderTab();
+    });
+    if (ev.tipo) $('#f-tipo').value = ev.tipo;
+  });
+}
+function editarEvento(id) { abrirModalCrearEvento(id); }
+async function eliminarEvento(id) { if (confirm('¿Eliminar evento?')) { await db.eventos.delete(id); await renderTab(); } }
+
+/* ---------- Punto de Interés CRUD ---------- */
+function abrirModalCrearPOI(fechaPre) {
+  abrirModal('Añadir lugar para ver', `
+    <label>Fecha</label><input id="f-fecha" class="input-fecha" placeholder="dd/mm/aaaa" value="${escAttr(fechaPre || '')}">
+    <label>Nombre del lugar</label><input id="f-nombre" placeholder="Ej: Museo del Prado">
+    <label>Tipo</label>
+    <select id="f-tipo"><option value="turismo">Turismo</option><option value="comida">Comida</option><option value="naturaleza">Naturaleza</option><option value="compras">Compras</option><option value="otro">Otro</option></select>
+  `, async () => {
+    const fStr = $('#f-fecha').value;
+    if (!parseFecha(fStr)) { alert('Fecha inválida'); return; }
+    await db.puntos_interes.add({
+      viaje_id: currentViajeId,
+      fecha: fStr,
+      nombre: $('#f-nombre').value,
+      tipo: $('#f-tipo').value
+    });
+    cerrarModalDirecto(); await renderTab();
+  });
+}
+async function eliminarPOI(id) { if (confirm('¿Quitar lugar?')) { await db.puntos_interes.delete(id); await renderTab(); } }
+
+/* ---------- Alojamiento / Agenda día ---------- */
+function editarAlojamiento(fechaStr) {
+  db.agenda_dias.where({ viaje_id: currentViajeId, fecha: fechaStr }).first().then((ag) => {
+    abrirModal('Alojamiento del día', `
+      <label>Fecha</label><input readonly value="${escAttr(fechaStr)}">
+      <label>Nombre del alojamiento</label><input id="f-aloja" placeholder="Ej: Hotel Gran Vía" value="${escAttr(ag?.alojamiento || '')}">
+      <label>Notas del día (opcional)</label><textarea id="f-notas-dia">${escHTML(ag?.notas_dia || '')}</textarea>
+    `, async () => {
+      await db.agenda_dias.put({
+        viaje_id: currentViajeId,
+        fecha: fechaStr,
+        alojamiento: $('#f-aloja').value,
+        notas_dia: $('#f-notas-dia').value,
+        resumen_ia: ag?.resumen_ia || ''
+      });
+      cerrarModalDirecto(); await renderTab();
+    });
+  });
+}
+
+/* ---------- Checklist CRUD ---------- */
+function abrirModalCrearChecklist() {
+  abrirModal('Nuevo ítem checklist', `
+    <label>Categoría</label>
+    <input id="f-cat" list="cats" placeholder="Equipaje, Documentos, Electrónica…">
+    <datalist id="cats"><option value="Equipaje"><option value="Documentos"><option value="Electrónica"><option value="Higiene"><option value="Salud"><option value="Otros"></datalist>
+    <label>Ítem</label><input id="f-texto" placeholder="Ej: Pasaporte">
+  `, async () => {
+    const count = await db.checklists.where({ viaje_id: currentViajeId }).count();
+    await db.checklists.add({
+      viaje_id: currentViajeId,
+      categoria: $('#f-cat').value || 'General',
+      texto: $('#f-texto').value,
+      completado: 0,
+      orden: count
+    });
+    cerrarModalDirecto(); await renderTab();
+    if (navigator.vibrate) navigator.vibrate(40);
+  });
+}
+async function toggleChecklist(id, checked) {
+  await db.checklists.update(id, { completado: checked ? 1 : 0 });
+  await renderTab();
+  if (checked && navigator.vibrate) navigator.vibrate([30, 50, 30]);
+}
+async function eliminarChecklist(id) { if (confirm('¿Eliminar ítem?')) { await db.checklists.delete(id); await renderTab(); } }
+
+/* ---------- Documentos CRUD + Cifrado ---------- */
+function abrirModalCrearDocumento() {
+  abrirModal('Adjuntar documento', `
+    <label>Nombre</label><input id="f-nombre" placeholder="Ej: Pasaporte Juan">
+    <label>Tipo</label>
+    <select id="f-tipo-doc"><option value="pasaporte">Pasaporte</option><option value="dni">DNI</option><option value="visado">Visado</option><option value="seguro">Seguro</option><option value="reserva">Reserva</option><option value="otro">Otro</option></select>
+    <label>Fecha caducidad (dd/mm/aaaa, opcional)</label><input id="f-caduca" class="input-fecha" placeholder="dd/mm/aaaa">
+    <label>Archivo</label><input type="file" id="f-archivo">
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px"><input type="checkbox" id="f-cifrar" checked> Cifrar archivo</label>
+    <p style="font-size:.8rem;color:var(--text-muted)">Si cifras, se requiere tu contraseña maestra para descargarlo después.</p>
+  `, async () => {
+    const fileInput = $('#f-archivo');
+    if (!fileInput.files.length) { alert('Selecciona un archivo'); return; }
+    const file = fileInput.files[0];
+    const buffer = await file.arrayBuffer();
+    let blobToStore = new Uint8Array(buffer);
+    let cifrado = 0, salt = null, iv = null;
+
+    if ($('#f-cifrar').checked) {
+      try {
+        const pw = ensurePassword();
+        const enc = await encryptBuffer(buffer, pw);
+        blobToStore = enc.data; salt = enc.salt; iv = enc.iv; cifrado = 1;
+      } catch (e) { alert('Error al cifrar: ' + e.message); return; }
+    }
+
+    const c = $('#f-caduca').value;
+    const docId = await db.documentos.add({
+      viaje_id: currentViajeId,
+      nombre: $('#f-nombre').value || file.name,
+      tipo: $('#f-tipo-doc').value,
+      tags: [],
+      fecha_caducidad: c && parseFecha(c) ? c : null,
+      cifrado
+    });
+
+    await db.archivos.add({
+      doc_id: docId,
+      nombre: file.name,
+      mimeType: file.type || 'application/octet-stream',
+      blob: blobToStore,
+      salt,
+      iv
+    });
+
+    cerrarModalDirecto(); await renderTab();
+  });
+}
+
+async function descargarDocumento(docId) {
+  const doc = await db.documentos.get(docId);
+  const arch = await db.archivos.where({ doc_id: docId }).first();
+  if (!arch) { alert('Archivo no encontrado'); return; }
+  let finalBuffer = arch.blob;
+
+  if (doc.cifrado) {
+    const pw = prompt('Este documento está cifrado. Introduce contraseña maestra:');
+    if (!pw) return;
+    try {
+      finalBuffer = await decryptBuffer(arch.blob, arch.salt, arch.iv, pw);
+    } catch (e) { alert('Contraseña incorrecta o archivo corrupto'); return; }
+  }
+
+  const blob = new Blob([finalBuffer], { type: arch.mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = arch.nombre; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+async function eliminarDocumento(id) {
+  if (!confirm('¿Eliminar documento?')) return;
+  await db.archivos.where({ doc_id: id }).delete();
+  await db.documentos.delete(id);
+  await renderTab();
+}
+
+/* ---------- QR + Wake Lock ---------- */
+async function mostrarQR(texto, titulo) {
+  if (!texto) return;
+  $('#qr-titulo').textContent = titulo || 'Código QR';
+  $('#qr-modal').classList.remove('hidden');
+  await QRCode.toCanvas($('#qr-canvas'), texto, { width: 300, margin: 2, color: { dark: '#000', light: '#fff' } });
+  try {
+    if ('wakeLock' in navigator) wakeLockObj = await navigator.wakeLock.request('screen');
+  } catch (e) { console.log('Wake lock no disponible', e); }
+}
+function cerrarQR() {
+  $('#qr-modal').classList.add('hidden');
+  if (wakeLockObj) { wakeLockObj.release().catch(()=>{}); wakeLockObj = null; }
+}
+
+/* ---------- Export / Import ---------- */
+async function exportarTodo() {
+  const data = {
+    viajes: await db.viajes.toArray(),
+    reservas: await db.reservas.toArray(),
+    eventos: await db.eventos.toArray(),
+    checklists: await db.checklists.toArray(),
+    documentos: await db.documentos.toArray(),
+    archivos: await db.archivos.toArray(),
+    agenda_dias: await db.agenda_dias.toArray(),
+    puntos_interes: await db.puntos_interes.toArray(),
+    config: await db.config.toArray(),
+    exportado: new Date().toISOString()
+  };
+  data.archivos = data.archivos.map((a) => ({ ...a, blob: Array.from(a.blob) }));
+  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `bunker-backup-${fechaHoy().replace(/\//g,'-')}.json`; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+async function importarTodo(input) {
+  const file = input.files[0]; if (!file) return;
+  const text = await file.text();
+  try {
+    const data = JSON.parse(text);
+    if (!confirm(`Esto REEMPLAZARÁ todos los datos actuales por los del backup de ${data.exportado || 'fecha desconocida'}. ¿Continuar?`)) return;
+    await db.viajes.clear(); await db.reservas.clear(); await db.eventos.clear();
+    await db.checklists.clear(); await db.documentos.clear(); await db.archivos.clear();
+    await db.agenda_dias.clear(); await db.puntos_interes.clear(); await db.config.clear();
+
+    if (data.viajes?.length) await db.viajes.bulkAdd(data.viajes);
+    if (data.reservas?.length) await db.reservas.bulkAdd(data.reservas);
+    if (data.eventos?.length) await db.eventos.bulkAdd(data.eventos);
+    if (data.checklists?.length) await db.checklists.bulkAdd(data.checklists);
+    if (data.documentos?.length) await db.documentos.bulkAdd(data.documentos);
+    if (data.archivos?.length) {
+      const fixed = data.archivos.map((a) => ({ ...a, blob: new Uint8Array(a.blob) }));
+      await db.archivos.bulkAdd(fixed);
+    }
+    if (data.agenda_dias?.length) await db.agenda_dias.bulkAdd(data.agenda_dias);
+    if (data.puntos_interes?.length) await db.puntos_interes.bulkAdd(data.puntos_interes);
+    if (data.config?.length) await db.config.bulkAdd(data.config);
+
+    alert('Importación completada');
+    irHome();
+  } catch (e) { alert('Error al importar: ' + e.message); console.error(e); }
+  input.value = '';
+}
+
+async function borrarTodo() {
+  if (!confirm('⚠️ ¿Borrar TODOS los datos? No se puede deshacer.')) return;
+  await db.delete();
+  location.reload();
+}
+
+/* ---------- Menú / Config ---------- */
+function cerrarMenu(ev) { if (ev.target === $('#menu-overlay')) $('#menu-overlay').classList.add('hidden'); }
+function cerrarMenuDirecto() { $('#menu-overlay').classList.add('hidden'); }
+
+function mostrarConfigIA() {
+  Promise.all([getConfig('claude_api_key'), getConfig('claude_model')]).then(([key, model]) => {
+    abrirModal('Configurar Claude IA', `
+      <label>API Key de Anthropic</label>
+      <input id="cfg-key" type="password" placeholder="sk-ant-..." value="${escAttr(key || '')}">
+      <label>Modelo</label>
+      <select id="cfg-model">
+        <option value="claude-3-haiku-20240307" ${model !== 'claude-3-sonnet-20241022' ? 'selected' : ''}>Claude 3 Haiku (rápido/barato)</option>
+        <option value="claude-3-sonnet-20241022" ${model === 'claude-3-sonnet-20241022' ? 'selected' : ''}>Claude 3.5 Sonnet (más capaz)</option>
+      </select>
+      <p style="font-size:.8rem;color:var(--text-muted);margin-top:8px">
+        Tu API key se guarda solo en este dispositivo (IndexedDB). Nunca se envía a ningún servidor excepto a la API oficial de Anthropic.
+      </p>
+    `, async () => {
+      await setConfig('claude_api_key', $('#cfg-key').value.trim());
+      await setConfig('claude_model', $('#cfg-model').value);
+      cerrarModalDirecto();
+      alert('Configuración guardada');
+    });
+  });
+}
+
+function mostrarAyuda() {
+  alert('Búnker de Viajes v2.0\n\n📅 Agenda diaria con alojamiento, eventos y puntos de interés.\n🤖 Integración con Claude IA para analizar documentos y resumir días.\n🔐 Documentos cifrados localmente con tu contraseña.\n📤 Exporta backups JSON para guardar en Drive/Dropbox.\n\nTodo funciona offline. Los datos nunca salen de tu móvil salvo cuando usas la IA (va directo a Anthropic).');
+}
+
+/* ---------- Init ---------- */
+document.addEventListener('DOMContentLoaded', () => {
+  renderHome();
+  $('#btn-back').addEventListener('click', irHome);
+  $('#btn-menu').addEventListener('click', () => $('#menu-overlay').classList.remove('hidden'));
+});
