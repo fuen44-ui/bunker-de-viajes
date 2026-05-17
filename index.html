@@ -35,13 +35,37 @@
       <!-- VIAJE DETAIL -->
       <section id="vista-viaje" class="hidden">
         <div id="viaje-info" class="card" style="margin-top:0"></div>
+
+        <!-- Navegación calendario -->
+        <div id="cal-nav" class="hidden">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px">
+            <button class="btn btn-sm btn-secondary" onclick="calendarioAnterior()">◀</button>
+            <h3 id="cal-titulo" style="margin:0;font-size:1rem;text-align:center;flex:1"></h3>
+            <button class="btn btn-sm btn-secondary" onclick="calendarioSiguiente()">▶</button>
+          </div>
+          <div class="tabs" style="margin-bottom:10px">
+            <button class="tab active" data-cal="mes" onclick="cambiarModoCalendario('mes')">Mes</button>
+            <button class="tab" data-cal="semana" onclick="cambiarModoCalendario('semana')">Semana</button>
+            <button class="tab" data-cal="ano" onclick="cambiarModoCalendario('ano')">Año</button>
+          </div>
+        </div>
+
         <div class="tabs">
-          <button class="tab active" data-tab="agenda" onclick="cambiarTab('agenda')">📅 Agenda</button>
+          <button class="tab active" data-tab="calendario" onclick="cambiarTab('calendario')">📅 Calendario</button>
           <button class="tab" data-tab="reservas" onclick="cambiarTab('reservas')">🎫 Reservas</button>
           <button class="tab" data-tab="documentos" onclick="cambiarTab('documentos')">📁 Docs</button>
           <button class="tab" data-tab="checklist" onclick="cambiarTab('checklist')">✅ Checklist</button>
         </div>
         <div id="tab-content"></div>
+
+        <!-- Vista detalle de un día -->
+        <div id="vista-dia-detalle" class="hidden">
+          <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
+            <button class="btn btn-sm btn-secondary" onclick="volverACalendario()">← Volver</button>
+            <h3 id="dia-detalle-titulo" style="margin:0"></h3>
+          </div>
+          <div id="dia-detalle-body"></div>
+        </div>
       </section>
     </main>
 

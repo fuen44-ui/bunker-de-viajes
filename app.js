@@ -283,10 +283,15 @@ async function resumirDiaIA(fechaStr) {
   }
 }
 
+/* ---------- Estado calendario ---------- */
+let calendarioModo = 'mes';
+let calendarioFechaRef = new Date();
+
 /* ---------- Navegación ---------- */
 function irHome() {
   currentViajeId = null;
-  currentTab = 'agenda';
+  currentTab = 'calendario';
+  calendarioModo = 'mes';
   $('#vista-home').classList.remove('hidden');
   $('#vista-viaje').classList.add('hidden');
   $('#bottom-nav').classList.add('hidden');
@@ -296,14 +301,20 @@ function irHome() {
 }
 
 async function abrirViaje(id) {
+  const v = await db.viajes.get(id);
   currentViajeId = id;
-  currentTab = 'agenda';
+  currentTab = 'calendario';
+  calendarioModo = 'mes';
+  // Inicializar referencia del calendario al inicio del viaje
+  const ini = parseFecha(v?.fecha_inicio);
+  calendarioFechaRef = ini ? new Date(ini) : new Date();
+
   $('#vista-home').classList.add('hidden');
   $('#vista-viaje').classList.remove('hidden');
   $('#bottom-nav').classList.remove('hidden');
   $('#btn-back').classList.remove('hidden');
   $('#fab').style.bottom = '78px';
-  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'agenda'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'calendario'));
   await renderViajeInfo();
   await renderTab();
 }
@@ -311,6 +322,13 @@ async function abrirViaje(id) {
 function cambiarTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  $('#vista-dia-detalle').classList.add('hidden');
+  $('#tab-content').classList.remove('hidden');
+  if (tab === 'calendario') {
+    $('#cal-nav').classList.remove('hidden');
+  } else {
+    $('#cal-nav').classList.add('hidden');
+  }
   renderTab();
 }
 
@@ -351,13 +369,198 @@ async function renderViajeInfo() {
 async function renderTab() {
   const container = $('#tab-content');
   container.innerHTML = '<p style="color:var(--text-muted)">Cargando…</p>';
-  if (currentTab === 'agenda') await renderAgenda(container);
+  if (currentTab === 'calendario') await renderCalendario(container);
   else if (currentTab === 'reservas') await renderReservas(container);
   else if (currentTab === 'documentos') await renderDocumentos(container);
   else if (currentTab === 'checklist') await renderChecklist(container);
 }
 
-/* ---------- Render Agenda ---------- */
+/* ---------- Render Calendario ---------- */
+async function renderCalendario(container) {
+  if (calendarioModo === 'mes') await renderCalendarioMes(container, calendarioFechaRef);
+  else if (calendarioModo === 'semana') await renderCalendarioSemana(container, calendarioFechaRef);
+  else if (calendarioModo === 'ano') await renderCalendarioAno(container, calendarioFechaRef);
+}
+
+async function renderCalendarioMes(container, refDate) {
+  const year = refDate.getFullYear();
+  const month = refDate.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const lastDay = new Date(year, month + 1, 0);
+  const daysInMonth = lastDay.getDate();
+  let startDay = firstDay.getDay();
+  startDay = startDay === 0 ? 6 : startDay - 1; // 0=Lunes
+
+  const allEvents = await db.eventos.where({ viaje_id: currentViajeId }).toArray();
+  const eventMap = {};
+  allEvents.forEach(e => {
+    const d = parseFecha(e.fecha_dia);
+    if (d && d.getFullYear() === year && d.getMonth() === month) eventMap[d.getDate()] = true;
+  });
+
+  const v = await db.viajes.get(currentViajeId);
+  const diasViaje = new Set(diasRango(v.fecha_inicio, v.fecha_fin));
+  const todayStr = fechaHoy();
+  const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  $('#cal-titulo').textContent = `${meses[month]} ${year}`;
+
+  let html = '<div class="cal-grid">';
+  ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'].forEach(h => html += `<div class="cal-header">${h}</div>`);
+  for (let i = 0; i < startDay; i++) html += '<div class="cal-cell empty"></div>';
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = fmtDate(new Date(year, month, d));
+    const classes = ['cal-cell'];
+    if (dateStr === todayStr) classes.push('today');
+    if (eventMap[d]) classes.push('has-events');
+    if (!diasViaje.has(dateStr)) classes.push('out-range');
+    const click = diasViaje.has(dateStr) ? `onclick="abrirDia('${escAttr(dateStr)}')"` : '';
+    html += `<div class="${classes.join(' ')}" ${click}><span class="cal-num">${d}</span>${eventMap[d] ? '<span class="cal-dot"></span>' : ''}</div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+async function renderCalendarioSemana(container, refDate) {
+  const day = refDate.getDay();
+  const diff = refDate.getDate() - (day === 0 ? 6 : day - 1);
+  const monday = new Date(refDate);
+  monday.setDate(diff);
+  monday.setHours(12,0,0,0);
+
+  const allEvents = await db.eventos.where({ viaje_id: currentViajeId }).toArray();
+  const eventMap = {};
+  allEvents.forEach(e => { eventMap[e.fecha_dia] = (eventMap[e.fecha_dia] || 0) + 1; });
+
+  const v = await db.viajes.get(currentViajeId);
+  const diasViaje = new Set(diasRango(v.fecha_inicio, v.fecha_fin));
+  const todayStr = fechaHoy();
+  const dom = fmtDate(new Date(monday));
+  const domFin = fmtDate(new Date(monday.getTime() + 6 * 86400000));
+  $('#cal-titulo').textContent = `${dom} → ${domFin}`;
+
+  let html = '<div class="cal-week">';
+  const nombres = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    const dateStr = fmtDate(d);
+    const count = eventMap[dateStr] || 0;
+    const classes = ['cal-week-day'];
+    if (dateStr === todayStr) classes.push('today');
+    if (count) classes.push('has-events');
+    if (!diasViaje.has(dateStr)) classes.push('out-range');
+    const click = diasViaje.has(dateStr) ? `onclick="abrirDia('${escAttr(dateStr)}')"` : '';
+    html += `<div class="${classes.join(' ')}" ${click}><div class="wd-name">${nombres[i]}</div><div class="wd-num">${d.getDate()}</div><div class="wd-dots">${Array(count).fill('<span class="wd-dot"></span>').join('')}</div></div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+async function renderCalendarioAno(container, refDate) {
+  const year = refDate.getFullYear();
+  const allEvents = await db.eventos.where({ viaje_id: currentViajeId }).toArray();
+  const countMap = {};
+  allEvents.forEach(e => {
+    const d = parseFecha(e.fecha_dia);
+    if (d && d.getFullYear() === year) countMap[d.getMonth()] = (countMap[d.getMonth()] || 0) + 1;
+  });
+  $('#cal-titulo').textContent = `Año ${year}`;
+  const meses = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  let html = '<div class="cal-year">';
+  for (let m = 0; m < 12; m++) {
+    const classes = ['cal-year-month'];
+    if (countMap[m]) classes.push('has-events');
+    html += `<div class="${classes.join(' ')}" onclick="irAMes(${m})"><div class="ym-name">${meses[m]}</div><div class="ym-count">${countMap[m] || 0} eventos</div></div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function calendarioAnterior() {
+  if (calendarioModo === 'mes') calendarioFechaRef.setMonth(calendarioFechaRef.getMonth() - 1);
+  else if (calendarioModo === 'semana') calendarioFechaRef.setDate(calendarioFechaRef.getDate() - 7);
+  else if (calendarioModo === 'ano') calendarioFechaRef.setFullYear(calendarioFechaRef.getFullYear() - 1);
+  renderTab();
+}
+function calendarioSiguiente() {
+  if (calendarioModo === 'mes') calendarioFechaRef.setMonth(calendarioFechaRef.getMonth() + 1);
+  else if (calendarioModo === 'semana') calendarioFechaRef.setDate(calendarioFechaRef.getDate() + 7);
+  else if (calendarioModo === 'ano') calendarioFechaRef.setFullYear(calendarioFechaRef.getFullYear() + 1);
+  renderTab();
+}
+function cambiarModoCalendario(modo) {
+  calendarioModo = modo;
+  document.querySelectorAll('[data-cal]').forEach(t => t.classList.toggle('active', t.dataset.cal === modo));
+  renderTab();
+}
+function irAMes(mes) {
+  calendarioFechaRef.setMonth(mes);
+  cambiarModoCalendario('mes');
+}
+
+function abrirDia(fechaStr) {
+  $('#tab-content').classList.add('hidden');
+  $('#cal-nav').classList.add('hidden');
+  $('#vista-dia-detalle').classList.remove('hidden');
+  renderDiaDetalle(fechaStr);
+}
+function volverACalendario() {
+  $('#vista-dia-detalle').classList.add('hidden');
+  $('#tab-content').classList.remove('hidden');
+  $('#cal-nav').classList.remove('hidden');
+}
+
+async function renderDiaDetalle(fechaStr) {
+  $('#dia-detalle-titulo').textContent = `${diaSemana(fechaStr)} ${fechaStr}`;
+  const allEvents = await db.eventos.where({ viaje_id: currentViajeId }).sortBy('fecha_hora');
+  const evs = allEvents.filter(e => e.fecha_dia === fechaStr);
+  const ps = await db.puntos_interes.where({ viaje_id: currentViajeId }).toArray();
+  const psDia = ps.filter(p => p.fecha === fechaStr);
+  const ag = await db.agenda_dias.where({ viaje_id: currentViajeId, fecha: fechaStr }).first();
+
+  const eventoIds = evs.map(e => e.id);
+  const adjuntosAll = eventoIds.length ? await db.adjuntos.where('evento_id').anyOf(eventoIds).toArray() : [];
+  const eventosConAdjuntos = new Set(adjuntosAll.map(a => a.evento_id));
+
+  const timeline = evs.length ? `<div class="timeline">${evs.map(e => `
+    <div class="timeline-item">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
+        <div style="min-width:0">
+          <div class="hora">${escHTML(horaDesdeISO(e.fecha_hora))}</div>
+          <div class="txt">${iconoTipo(e.tipo)} ${escHTML(e.titulo)} ${e.notas ? `<span style="color:var(--text-muted);font-size:.8rem">(${escHTML(e.notas)})</span>` : ''} ${eventosConAdjuntos.has(e.id) ? `<button style="background:transparent;border:none;padding:0;cursor:pointer;font-size:1rem" onclick="event.stopPropagation();mostrarAdjuntosEvento(${e.id})" title="Ver adjuntos">📎</button>` : ''}</div>
+        </div>
+        <div style="display:flex;gap:4px;flex-shrink:0">
+          <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();editarEvento(${e.id})">✏️</button>
+          <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();eliminarEvento(${e.id})">✕</button>
+        </div>
+      </div>
+    </div>
+  `).join('')}</div>` : '<p style="color:var(--text-muted);font-size:.85rem">Sin eventos programados.</p>';
+
+  const poisHtml = psDia.length ? `<div style="margin-top:10px"><strong style="font-size:.8rem;color:var(--text-muted)">📍 Para ver / visitar</strong><div style="margin-top:4px">${psDia.map(p => `<span class="poi-chip">${escHTML(p.nombre)} <button style="background:transparent;border:none;color:var(--danger);padding:0 0 0 4px;cursor:pointer" onclick="eliminarPOI(${p.id})">✕</button></span>`).join('')}</div></div>` : '';
+  const resumenHtml = ag?.resumen_ia ? `<div class="resumen-ia"><strong>🤖 Resumen IA</strong><br>${escHTML(ag.resumen_ia)}</div>` : '';
+
+  $('#dia-detalle-body').innerHTML = `
+    <div class="day-card" style="margin-bottom:12px">
+      <div class="day-header">
+        <h4>🏨 ${escHTML(ag?.alojamiento || 'Sin alojamiento')}</h4>
+        <button class="btn btn-sm btn-secondary" onclick="editarAlojamiento('${escAttr(fechaStr)}')">Editar</button>
+      </div>
+      <div class="day-body">
+        ${timeline}
+        ${poisHtml}
+        ${resumenHtml}
+        <div class="toolbar" style="margin-top:10px;margin-bottom:0">
+          <button class="btn btn-sm btn-secondary" onclick="abrirModalCrearEvento(null,'${escAttr(fechaStr)}')">+ Evento</button>
+          <button class="btn btn-sm btn-secondary" onclick="abrirModalCrearPOI('${escAttr(fechaStr)}')">+ Lugar</button>
+          <button class="btn btn-sm btn-info" onclick="resumirDiaIA('${escAttr(fechaStr)}')">🤖 Resumir</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ---------- Render Agenda (lista completa, legacy) ---------- */
 async function renderAgenda(container) {
   const v = await db.viajes.get(currentViajeId);
   const dias = diasRango(v.fecha_inicio, v.fecha_fin);
