@@ -379,8 +379,16 @@ async function renderAgenda(container) {
 
     const timeline = evs.length ? `<div class="timeline">${evs.map(e => `
       <div class="timeline-item">
-        <div class="hora">${escHTML(horaDesdeISO(e.fecha_hora))}</div>
-        <div class="txt">${iconoTipo(e.tipo)} ${escHTML(e.titulo)} ${e.notas ? `<span style="color:var(--text-muted);font-size:.8rem">(${escHTML(e.notas)})</span>` : ''}</div>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
+          <div style="min-width:0">
+            <div class="hora">${escHTML(horaDesdeISO(e.fecha_hora))}</div>
+            <div class="txt">${iconoTipo(e.tipo)} ${escHTML(e.titulo)} ${e.notas ? `<span style="color:var(--text-muted);font-size:.8rem">(${escHTML(e.notas)})</span>` : ''}</div>
+          </div>
+          <div style="display:flex;gap:4px;flex-shrink:0">
+            <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();editarEvento(${e.id})">✏️</button>
+            <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();eliminarEvento(${e.id})">✕</button>
+          </div>
+        </div>
       </div>
     `).join('')}</div>` : '<p style="color:var(--text-muted);font-size:.85rem">Sin eventos programados.</p>';
 
