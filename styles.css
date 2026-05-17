@@ -83,7 +83,7 @@ main {
 .btn-secondary { background: var(--surface-light); color: var(--text); }
 .btn-danger { background: var(--danger); color: #fff; }
 .btn-info { background: var(--info); color: #000; }
-.btn-sm { padding: 8px 10px; font-size: .9rem; min-height: 40px; width: auto; }
+.btn-sm { padding: 6px 8px; font-size: .85rem; min-height: 36px; width: auto; }
 
 .card {
   background: var(--surface);
@@ -150,21 +150,27 @@ input.input-fecha { font-variant-numeric: tabular-nums; }
 .item {
   background: var(--surface);
   border-radius: var(--radius);
-  padding: 14px;
+  padding: 12px;
   margin-bottom: 10px;
   border: 1px solid var(--surface-light);
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 .item .icon {
-  font-size: 1.6rem;
+  font-size: 1.4rem;
   flex-shrink: 0;
 }
 .item .body { flex: 1; min-width: 0; }
-.item .title { font-weight: 600; margin: 0 0 2px; }
-.item .meta { color: var(--text-muted); font-size: .85rem; margin: 0; }
-.item .right { flex-shrink: 0; display: flex; gap: 6px; }
+.item .title { font-weight: 600; margin: 0 0 2px; font-size: .95rem; }
+.item .meta { color: var(--text-muted); font-size: .8rem; margin: 0; }
+.item .right {
+  flex-shrink: 0;
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
 
 .check-item {
   align-items: flex-start;

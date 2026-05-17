@@ -670,6 +670,7 @@ async function renderDocumentos(container) {
       </div>
       <div class="right">
         <button class="btn btn-sm btn-info" onclick="analizarDocumentoIA(${d.id})">🤖</button>
+        <button class="btn btn-sm btn-secondary" onclick="compartirDocumento(${d.id})">↗️</button>
         <button class="btn btn-sm btn-secondary" onclick="descargarDocumento(${d.id})">⬇️</button>
         <button class="btn btn-sm btn-danger" onclick="eliminarDocumento(${d.id})">✕</button>
       </div>
@@ -800,7 +801,7 @@ function abrirModalCrearReserva(editId) {
       <label>Fecha (dd/mm/aaaa)</label><input id="f-fecha" class="input-fecha" placeholder="dd/mm/aaaa" value="${escAttr(r.fecha ? fmtDate(r.fecha) : '')}">
       <label>Hora</label><input type="time" id="f-hora" value="${escAttr(r.fecha ? horaDesdeISO(r.fecha) : '')}">
       <label>Notas</label><textarea id="f-notas">${escHTML(r.notas || '')}</textarea>
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px"><input type="checkbox" id="f-cita" checked> 📅 Crear cita en calendario</label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;flex-wrap:wrap"><input type="checkbox" id="f-cita" checked> 📅 Cita en calendario</label>
       <label>Adjuntar documento (opcional)</label><input type="file" id="f-adjunto">
     `, async () => {
       const fStr = $('#f-fecha').value;
@@ -1046,6 +1047,30 @@ async function descargarDocumento(docId) {
   const a = document.createElement('a');
   a.href = url; a.download = arch.nombre; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+async function compartirDocumento(docId) {
+  const doc = await db.documentos.get(docId);
+  const arch = await db.archivos.where({ doc_id: docId }).first();
+  if (!arch) { alert('Archivo no encontrado'); return; }
+  let finalBuffer = arch.blob;
+  if (doc.cifrado) {
+    const pw = prompt('Documento cifrado. Introduce contraseña maestra para compartir:');
+    if (!pw) return;
+    try { finalBuffer = await decryptBuffer(arch.blob, arch.salt, arch.iv, pw); }
+    catch (e) { alert('Contraseña incorrecta'); return; }
+  }
+  const file = new File([finalBuffer], arch.nombre, { type: arch.mimeType });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: doc.nombre });
+    } catch (e) { if (e.name !== 'AbortError') alert('Error al compartir: ' + e.message); }
+  } else {
+    const url = URL.createObjectURL(file);
+    const a = document.createElement('a');
+    a.href = url; a.download = arch.nombre; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
 }
 
 async function eliminarDocumento(id) {
