@@ -78,7 +78,7 @@ function horaDesdeISO(iso) {
 
 /* ---------- Base de datos ---------- */
 const db = new Dexie('BunkerViajes');
-db.version(2).stores({
+db.version(3).stores({
   viajes: '++id, destino, fecha_inicio, fecha_fin, estado, creado',
   reservas: '++id, viaje_id, tipo, titulo, localizador, fecha',
   eventos: '++id, viaje_id, fecha_hora, tipo, titulo, [viaje_id+fecha_hora]',
@@ -86,6 +86,7 @@ db.version(2).stores({
   puntos_interes: '++id, viaje_id, fecha, nombre, tipo',
   documentos: '++id, viaje_id, nombre, tipo, tags, fecha_caducidad, cifrado',
   archivos: '++id, doc_id, nombre, mimeType',
+  adjuntos: '++id, evento_id, doc_id',
   checklists: '++id, viaje_id, categoria, texto, completado, orden',
   config: 'clave'
 });
@@ -366,10 +367,15 @@ async function renderAgenda(container) {
   }
 
   const eventosAll = await db.eventos.where({ viaje_id: currentViajeId }).sortBy('fecha_hora');
-  const eventos = eventosAll; // filtrado por día más abajo
+  const eventos = eventosAll;
   const pois = await db.puntos_interes.where({ viaje_id: currentViajeId }).toArray();
   const agendaDias = await db.agenda_dias.where({ viaje_id: currentViajeId }).toArray();
   const mapAgenda = Object.fromEntries(agendaDias.map(d => [d.fecha, d]));
+
+  // Precargar qué eventos tienen adjuntos
+  const eventoIds = eventos.map(e => e.id);
+  const adjuntosAll = eventoIds.length ? await db.adjuntos.where('evento_id').anyOf(eventoIds).toArray() : [];
+  const eventosConAdjuntos = new Set(adjuntosAll.map(a => a.evento_id));
 
   container.innerHTML = '';
   for (const fechaStr of dias) {
@@ -382,7 +388,7 @@ async function renderAgenda(container) {
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
           <div style="min-width:0">
             <div class="hora">${escHTML(horaDesdeISO(e.fecha_hora))}</div>
-            <div class="txt">${iconoTipo(e.tipo)} ${escHTML(e.titulo)} ${e.notas ? `<span style="color:var(--text-muted);font-size:.8rem">(${escHTML(e.notas)})</span>` : ''}</div>
+            <div class="txt">${iconoTipo(e.tipo)} ${escHTML(e.titulo)} ${e.notas ? `<span style="color:var(--text-muted);font-size:.8rem">(${escHTML(e.notas)})</span>` : ''} ${eventosConAdjuntos.has(e.id) ? `<button style="background:transparent;border:none;padding:0;cursor:pointer;font-size:1rem" onclick="event.stopPropagation();mostrarAdjuntosEvento(${e.id})" title="Ver adjuntos">📎</button>` : ''}</div>
           </div>
           <div style="display:flex;gap:4px;flex-shrink:0">
             <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();editarEvento(${e.id})">✏️</button>
@@ -477,7 +483,11 @@ async function renderChecklist(container) {
 }
 
 function iconoTipo(tipo) {
-  const map = { vuelo: '✈️', hotel: '🏨', tren: '🚆', bus: '🚌', barco: '⛴️', coche: '🚗', actividad: '🎯', restaurante: '🍽️', seguro: '🛡️', pasaporte: '🛂', dni: '🆔', visado: '🛂', otros: '📌' };
+  const map = {
+    vuelo: '✈️', hotel: '🏨', tren: '🚆', bus: '🚌', barco: '⛴️', coche: '🚗',
+    actividad: '🎯', restaurante: '🍽️', comida: '🍽️', seguro: '🛡️',
+    pasaporte: '🛂', dni: '🆔', visado: '🛂', ics: '📅', adjunto: '📎', otros: '📌'
+  };
   return map[(tipo || '').toLowerCase()] || '📌';
 }
 
@@ -601,6 +611,7 @@ function abrirModalCrearEvento(editId, fechaPre) {
       <select id="f-tipo">
         <option value="vuelo">✈️ Vuelo</option><option value="hotel">🏨 Hotel</option>
         <option value="tren">🚆 Tren</option><option value="bus">🚌 Bus</option>
+        <option value="barco">⛴️ Barco</option><option value="coche">🚗 Coche</option>
         <option value="actividad">🎯 Actividad</option><option value="restaurante">🍽️ Restaurante</option>
         <option value="otros">📌 Otros</option>
       </select>
@@ -608,6 +619,7 @@ function abrirModalCrearEvento(editId, fechaPre) {
       <label>Fecha (dd/mm/aaaa)</label><input id="f-fecha" class="input-fecha" placeholder="dd/mm/aaaa" value="${escAttr(fPre)}">
       <label>Hora</label><input type="time" id="f-hora" value="${escAttr(hPre)}">
       <label>Notas</label><textarea id="f-notas">${escHTML(ev.notas || '')}</textarea>
+      <label>Adjuntar archivo (opcional)</label><input type="file" id="f-adjunto">
     `, async () => {
       const fStr = $('#f-fecha').value;
       const hStr = $('#f-hora').value;
@@ -621,7 +633,15 @@ function abrirModalCrearEvento(editId, fechaPre) {
         fecha_dia: fStr,
         notas: $('#f-notas').value
       };
-      if (editId) await db.eventos.update(editId, data); else await db.eventos.add(data);
+      let eventoId = editId;
+      if (editId) await db.eventos.update(editId, data);
+      else eventoId = await db.eventos.add(data);
+
+      const fileInput = $('#f-adjunto');
+      if (fileInput && fileInput.files && fileInput.files.length) {
+        await guardarAdjunto(eventoId, fileInput.files[0]);
+      }
+
       cerrarModalDirecto(); await renderTab();
     });
     if (ev.tipo) $('#f-tipo').value = ev.tipo;
@@ -770,9 +790,75 @@ async function descargarDocumento(docId) {
 
 async function eliminarDocumento(id) {
   if (!confirm('¿Eliminar documento?')) return;
+  await db.adjuntos.where({ doc_id: id }).delete();
   await db.archivos.where({ doc_id: id }).delete();
   await db.documentos.delete(id);
   await renderTab();
+}
+
+/* ---------- Adjuntos a eventos ---------- */
+async function guardarAdjunto(eventoId, file) {
+  const buffer = await file.arrayBuffer();
+  let blobToStore = new Uint8Array(buffer);
+  let cifrado = 0, salt = null, iv = null;
+
+  const docId = await db.documentos.add({
+    viaje_id: currentViajeId,
+    nombre: file.name,
+    tipo: 'adjunto',
+    tags: ['evento_' + eventoId],
+    fecha_caducidad: null,
+    cifrado
+  });
+
+  await db.archivos.add({
+    doc_id: docId,
+    nombre: file.name,
+    mimeType: file.type || 'application/octet-stream',
+    blob: blobToStore,
+    salt,
+    iv
+  });
+
+  await db.adjuntos.add({ evento_id: eventoId, doc_id: docId });
+  return docId;
+}
+
+async function obtenerAdjuntos(eventoId) {
+  const links = await db.adjuntos.where({ evento_id: eventoId }).toArray();
+  const docs = [];
+  for (const l of links) {
+    const d = await db.documentos.get(l.doc_id);
+    if (d) docs.push(d);
+  }
+  return docs;
+}
+
+async function mostrarAdjuntosEvento(eventoId) {
+  const docs = await obtenerAdjuntos(eventoId);
+  if (!docs.length) { alert('Este evento no tiene archivos adjuntos'); return; }
+  abrirModal('Archivos del evento', docs.map(d => `
+    <div class="item">
+      <div class="icon">📎</div>
+      <div class="body">
+        <p class="title">${escHTML(d.nombre)}</p>
+        <p class="meta">${escHTML(d.tipo)}</p>
+      </div>
+      <div class="right">
+        <button class="btn btn-sm btn-secondary" onclick="descargarDocumento(${d.id})">⬇️</button>
+        <button class="btn btn-sm btn-danger" onclick="eliminarAdjunto(${eventoId},${d.id})">✕</button>
+      </div>
+    </div>
+  `).join(''), null);
+  $('#modal-ok').textContent = 'Cerrar';
+  modalConfirmFn = cerrarModalDirecto;
+}
+
+async function eliminarAdjunto(eventoId, docId) {
+  if (!confirm('¿Quitar este adjunto del evento?')) return;
+  await db.adjuntos.where({ evento_id: eventoId, doc_id: docId }).delete();
+  await renderTab();
+  mostrarAdjuntosEvento(eventoId);
 }
 
 /* ---------- QR + Wake Lock ---------- */
@@ -839,13 +925,14 @@ function parseICSDate(str) {
 
 function detectarTipoICS(summary, description) {
   const text = ((summary || '') + ' ' + (description || '')).toLowerCase();
-  if (text.includes('vuelo') || text.includes('flight') || text.includes('iberia') || text.includes('ryanair') || text.includes('vueling')) return 'vuelo';
-  if (text.includes('hotel') || text.includes('alojamiento') || text.includes('booking') || text.includes('airbnb')) return 'hotel';
-  if (text.includes('tren') || text.includes('renfe') || text.includes('ave')) return 'tren';
-  if (text.includes('bus') || text.includes('autobús')) return 'bus';
-  if (text.includes('barco') || text.includes('ferry') || text.includes('crucero')) return 'barco';
-  if (text.includes('restaurante') || text.includes('comida') || text.includes('cena') || text.includes('lunch') || text.includes('dinner')) return 'restaurante';
-  if (text.includes('actividad') || text.includes('tour') || text.includes('visita') || text.includes('entradas')) return 'actividad';
+  if (text.includes('vuelo') || text.includes('flight') || text.includes('boarding') || text.includes('departure') || text.includes('arrival') || text.includes('aeropuerto') || text.includes('airport') || text.includes('iberia') || text.includes('ryanair') || text.includes('vueling') || text.includes('easyjet') || text.includes('lufthansa') || text.includes('air france')) return 'vuelo';
+  if (text.includes('hotel') || text.includes('alojamiento') || text.includes('hostal') || text.includes('resort') || text.includes('booking') || text.includes('airbnb') || text.includes('habitación') || text.includes('room')) return 'hotel';
+  if (text.includes('tren') || text.includes('train') || text.includes('renfe') || text.includes('ave') || text.includes('railway') || text.includes('sncf') || text.includes('tgv') || text.includes('eurostar')) return 'tren';
+  if (text.includes('bus') || text.includes('autobús') || text.includes('coach') || text.includes('flixbus')) return 'bus';
+  if (text.includes('barco') || text.includes('ferry') || text.includes('crucero') || text.includes('cruise') || text.includes('ship')) return 'barco';
+  if (text.includes('coche') || text.includes('car') || text.includes('rental') || text.includes('alquiler') || text.includes('rent-a-car') || text.includes('sixt') || text.includes('avis') || text.includes('hertz') || text.includes('europcar') || text.includes('enterprise')) return 'coche';
+  if (text.includes('restaurante') || text.includes('comida') || text.includes('cena') || text.includes('lunch') || text.includes('dinner') || text.includes('breakfast') || text.includes('desayuno')) return 'restaurante';
+  if (text.includes('actividad') || text.includes('tour') || text.includes('visita') || text.includes('entradas') || text.includes('tickets') || text.includes('excursión')) return 'actividad';
   return 'otros';
 }
 
@@ -855,6 +942,25 @@ async function procesarICS(input) {
   const text = await file.text();
   const eventos = parseICS(text);
   if (!eventos.length) { alert('No se encontraron eventos en el archivo .ics'); input.value = ''; return; }
+
+  // Guardar archivo .ics original como documento
+  const buffer = await file.arrayBuffer();
+  const docId = await db.documentos.add({
+    viaje_id: currentViajeId,
+    nombre: file.name,
+    tipo: 'ics',
+    tags: [],
+    fecha_caducidad: null,
+    cifrado: 0
+  });
+  await db.archivos.add({
+    doc_id: docId,
+    nombre: file.name,
+    mimeType: 'text/calendar',
+    blob: new Uint8Array(buffer),
+    salt: null,
+    iv: null
+  });
 
   const listaHtml = eventos.map((ev, i) => `
     <div class="item" style="align-items:flex-start;margin-bottom:8px">
