@@ -1316,39 +1316,165 @@ async function borrarTodo() {
   location.reload();
 }
 
-/* ---------- Menú / Config ---------- */
-function cerrarMenu(ev) { if (ev.target === $('#menu-overlay')) $('#menu-overlay').classList.add('hidden'); }
-function cerrarMenuDirecto() { $('#menu-overlay').classList.add('hidden'); }
+/* ---------- Validación API Key Claude ---------- */
+async function validarClaveAPI(key) {
+  if (!key) return { ok: false, msg: 'Sin key' };
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ model: 'claude-3-haiku-20240307', max_tokens: 10, messages: [{ role: 'user', content: 'hi' }] })
+    });
+    if (res.status === 401) return { ok: false, msg: 'Key inválida' };
+    if (res.status === 403) return { ok: false, msg: 'Key sin permisos' };
+    if (!res.ok) return { ok: false, msg: `Error ${res.status}` };
+    return { ok: true, msg: 'Key activa' };
+  } catch (e) {
+    return { ok: false, msg: 'Sin conexión' };
+  }
+}
+
+/* ---------- PIN de acceso ---------- */
+function maskKey(key) {
+  if (!key || key.length < 8) return '';
+  return '••••••••••••' + key.slice(-4);
+}
+
+async function requierePIN() {
+  const pin = await getConfig('app_pin');
+  if (!pin) return true;
+  const input = prompt('🔒 Introduce tu PIN para continuar:');
+  if (input === null) return false;
+  if (input !== pin) { alert('PIN incorrecto'); return false; }
+  return true;
+}
 
 function mostrarConfigIA() {
-  Promise.all([getConfig('claude_api_key'), getConfig('claude_model')]).then(([key, model]) => {
+  Promise.all([getConfig('claude_api_key'), getConfig('claude_model')]).then(async ([key, model]) => {
+    const check = key ? await validarClaveAPI(key) : { ok: false, msg: 'Sin key' };
+    const statusColor = check.ok ? 'var(--success)' : 'var(--danger)';
+    const statusDot = check.ok ? '🟢' : '🔴';
+    const masked = maskKey(key || '');
     abrirModal('Configurar Claude IA', `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span style="font-size:1.2rem">${statusDot}</span>
+        <span style="color:${statusColor};font-weight:700;font-size:.9rem">${check.msg}</span>
+      </div>
       <label>API Key de Anthropic</label>
-      <input id="cfg-key" type="password" placeholder="sk-ant-..." value="${escAttr(key || '')}">
+      <div style="display:flex;gap:6px">
+        <input id="cfg-key" type="password" placeholder="sk-ant-..." value="${escAttr(key || '')}" style="flex:1">
+        <button type="button" class="btn btn-sm btn-secondary" onclick="const i=document.getElementById('cfg-key');i.type=i.type==='password'?'text':'password'">👁️</button>
+      </div>
+      <p id="cfg-status" style="font-size:.8rem;margin-top:6px;color:var(--text-muted)">${masked ? 'Key guardada: ' + masked : 'Sin key guardada'}</p>
       <label>Modelo</label>
       <select id="cfg-model">
         <option value="claude-3-haiku-20240307" ${model !== 'claude-3-sonnet-20241022' ? 'selected' : ''}>Claude 3 Haiku (rápido/barato)</option>
         <option value="claude-3-sonnet-20241022" ${model === 'claude-3-sonnet-20241022' ? 'selected' : ''}>Claude 3.5 Sonnet (más capaz)</option>
       </select>
-      <p style="font-size:.8rem;color:var(--text-muted);margin-top:8px">
-        Tu API key se guarda solo en este dispositivo (IndexedDB). Nunca se envía a ningún servidor excepto a la API oficial de Anthropic.
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn btn-sm btn-secondary" onclick="probarKeyClaude()">🧪 Probar key</button>
+      </div>
+      <p style="font-size:.75rem;color:var(--text-muted);margin-top:10px">
+        Tu API key se guarda solo en este dispositivo. Nunca se comparte.
       </p>
     `, async () => {
-      await setConfig('claude_api_key', $('#cfg-key').value.trim());
+      const nuevaKey = $('#cfg-key').value.trim();
+      if (nuevaKey) {
+        const check = await validarClaveAPI(nuevaKey);
+        if (!check.ok) { alert(check.msg + '\n\nLa key no se ha guardado.'); return; }
+      }
+      await setConfig('claude_api_key', nuevaKey);
       await setConfig('claude_model', $('#cfg-model').value);
       cerrarModalDirecto();
-      alert('Configuración guardada');
+      alert('✅ Configuración guardada');
     });
   });
 }
 
+async function probarKeyClaude() {
+  const key = $('#cfg-key').value.trim();
+  const status = $('#cfg-status');
+  status.textContent = '🔄 Comprobando...';
+  status.style.color = 'var(--text-muted)';
+  const check = await validarClaveAPI(key);
+  status.style.color = check.ok ? 'var(--success)' : 'var(--danger)';
+  status.textContent = (check.ok ? '🟢 ' : '🔴 ') + check.msg;
+}
+
+function mostrarConfigPIN() {
+  getConfig('app_pin').then((pin) => {
+    abrirModal('PIN de acceso', `
+      <label>PIN actual: ${pin ? '••••••' : 'Sin PIN'}</label>
+      <input id="pin-nuevo" type="password" inputmode="numeric" maxlength="6" placeholder="Nuevo PIN (4-6 dígitos)">
+      <input id="pin-repite" type="password" inputmode="numeric" maxlength="6" placeholder="Repite PIN" style="margin-top:8px">
+      <p style="font-size:.8rem;color:var(--text-muted);margin-top:8px">Deja ambos vacíos y guarda para eliminar el PIN.</p>
+    `, async () => {
+      const n = $('#pin-nuevo').value.trim();
+      const r = $('#pin-repite').value.trim();
+      if (!n && !r) {
+        await setConfig('app_pin', '');
+        cerrarModalDirecto();
+        alert('PIN eliminado');
+        return;
+      }
+      if (n.length < 4) { alert('El PIN debe tener al menos 4 dígitos'); return; }
+      if (n !== r) { alert('Los PIN no coinciden'); return; }
+      await setConfig('app_pin', n);
+      cerrarModalDirecto();
+      alert('PIN guardado. La próxima vez se pedirá al abrir la app.');
+    });
+  });
+}
+
+async function verificarBloqueo() {
+  const pin = await getConfig('app_pin');
+  if (!pin) return;
+  $('#pin-overlay').classList.remove('hidden');
+  $('#app').classList.add('hidden');
+}
+
+function desbloquearApp() {
+  const input = $('#pin-input').value.trim();
+  getConfig('app_pin').then((pin) => {
+    if (input === pin) {
+      $('#pin-overlay').classList.add('hidden');
+      $('#app').classList.remove('hidden');
+      $('#pin-error').style.display = 'none';
+      $('#pin-input').value = '';
+    } else {
+      $('#pin-error').style.display = 'block';
+      $('#pin-input').value = '';
+    }
+  });
+}
+
+/* ---------- Menú / Config ---------- */
+function cerrarMenu(ev) { if (ev.target === $('#menu-overlay')) $('#menu-overlay').classList.add('hidden'); }
+function cerrarMenuDirecto() { $('#menu-overlay').classList.add('hidden'); }
+
+async function mostrarConfigIAProtegido() {
+  const ok = await requierePIN();
+  if (ok) mostrarConfigIA();
+}
+
+async function borrarTodoProtegido() {
+  const ok = await requierePIN();
+  if (ok) borrarTodo();
+}
+
 function mostrarAyuda() {
-  alert('Búnker de Viajes v2.0\n\n📅 Agenda diaria con alojamiento, eventos y puntos de interés.\n🤖 Integración con Claude IA para analizar documentos y resumir días.\n🔐 Documentos cifrados localmente con tu contraseña.\n📤 Exporta backups JSON para guardar en Drive/Dropbox.\n\nTodo funciona offline. Los datos nunca salen de tu móvil salvo cuando usas la IA (va directo a Anthropic).');
+  alert('Búnker de Viajes\n\n📅 Calendario mes/semana/año\n🤖 Claude IA (validación de key + protección PIN)\n🔐 Documentos cifrados + PIN de acceso\n📤 Backups JSON\n\nTodo offline. Cada dispositivo tiene sus datos aislados en IndexedDB. Si compartes móvil, usa el PIN.');
 }
 
 /* ---------- Init ---------- */
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  await verificarBloqueo();
   renderHome();
   $('#btn-back').addEventListener('click', irHome);
   $('#btn-menu').addEventListener('click', () => $('#menu-overlay').classList.remove('hidden'));
+  $('#pin-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') desbloquearApp(); });
 });

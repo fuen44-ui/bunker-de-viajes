@@ -72,7 +72,7 @@
     <!-- NAVEGACIÓN INFERIOR -->
     <nav class="bottom-nav hidden" id="bottom-nav">
       <button class="active" onclick="irHome()"><span class="emoji">🏠</span>Inicio</button>
-      <button onclick="mostrarConfigIA()"><span class="emoji">🤖</span>Claude</button>
+      <button onclick="mostrarConfigIAProtegido()"><span class="emoji">🤖</span>Claude</button>
       <button onclick="mostrarAyuda()"><span class="emoji">❓</span>Ayuda</button>
     </nav>
 
@@ -114,12 +114,12 @@
     <div id="menu-overlay" class="modal-overlay hidden" onclick="cerrarMenu(event)">
       <div class="modal" style="border-radius:20px;margin:auto 20px;animation:none" onclick="event.stopPropagation()">
         <h2>Opciones</h2>
-        <button class="btn btn-secondary" style="margin-bottom:8px" onclick="mostrarConfigIA();cerrarMenuDirecto()">🤖 Configurar Claude IA</button>
+        <button class="btn btn-secondary" style="margin-bottom:8px" onclick="mostrarConfigIAProtegido();cerrarMenuDirecto()">🤖 Configurar Claude IA</button>
         <button class="btn btn-secondary" style="margin-bottom:8px" onclick="mostrarConfigPIN();cerrarMenuDirecto()">🔒 Configurar PIN de acceso</button>
         <button class="btn btn-secondary" style="margin-bottom:8px" onclick="exportarTodo();cerrarMenuDirecto()">📤 Exportar backup</button>
         <button class="btn btn-secondary" style="margin-bottom:8px" onclick="document.getElementById('import-file').click();cerrarMenuDirecto()">📥 Importar backup</button>
         <button class="btn btn-secondary" style="margin-bottom:8px" onclick="document.getElementById('ics-file').click();cerrarMenuDirecto()">📅 Importar .ics</button>
-        <button class="btn btn-danger" onclick="borrarTodo();cerrarMenuDirecto()">🗑️ Borrar todos los datos</button>
+        <button class="btn btn-danger" onclick="borrarTodoProtegido();cerrarMenuDirecto()">🗑️ Borrar todos los datos</button>
         <button class="btn btn-secondary" style="margin-top:8px" onclick="cerrarMenuDirecto()">Cerrar</button>
       </div>
     </div>
