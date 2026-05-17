@@ -28,6 +28,7 @@
           <button class="btn btn-secondary" onclick="exportarTodo()">📤 Exportar</button>
           <button class="btn btn-secondary" onclick="document.getElementById('import-file').click()">📥 Importar</button>
           <input type="file" id="import-file" class="hidden" accept=".json" onchange="importarTodo(this)">
+          <input type="file" id="ics-file" class="hidden" accept=".ics" onchange="procesarICS(this)">
         </div>
       </section>
 
@@ -81,6 +82,7 @@
         <button class="btn btn-secondary" style="margin-bottom:8px" onclick="mostrarConfigIA();cerrarMenuDirecto()">🤖 Configurar Claude IA</button>
         <button class="btn btn-secondary" style="margin-bottom:8px" onclick="exportarTodo();cerrarMenuDirecto()">📤 Exportar backup</button>
         <button class="btn btn-secondary" style="margin-bottom:8px" onclick="document.getElementById('import-file').click();cerrarMenuDirecto()">📥 Importar backup</button>
+        <button class="btn btn-secondary" style="margin-bottom:8px" onclick="document.getElementById('ics-file').click();cerrarMenuDirecto()">📅 Importar .ics</button>
         <button class="btn btn-danger" onclick="borrarTodo();cerrarMenuDirecto()">🗑️ Borrar todos los datos</button>
         <button class="btn btn-secondary" style="margin-top:8px" onclick="cerrarMenuDirecto()">Cerrar</button>
       </div>

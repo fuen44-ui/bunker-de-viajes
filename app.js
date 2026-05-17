@@ -782,6 +782,109 @@ function cerrarQR() {
   if (wakeLockObj) { wakeLockObj.release().catch(()=>{}); wakeLockObj = null; }
 }
 
+/* ---------- Parser iCalendar (.ics) ---------- */
+function parseICS(text) {
+  const unfolded = text.replace(/\r?\n[ \t]/g, '');
+  const lines = unfolded.split(/\r?\n/);
+  const events = [];
+  let current = null;
+
+  for (const line of lines) {
+    if (line === 'BEGIN:VEVENT') {
+      current = { summary: '', description: '', location: '', start: '', end: '', uid: '' };
+    } else if (line === 'END:VEVENT') {
+      if (current && current.start) events.push(current);
+      current = null;
+    } else if (current) {
+      const idx = line.indexOf(':');
+      if (idx === -1) continue;
+      const key = line.slice(0, idx).toUpperCase().split(';')[0];
+      const value = line.slice(idx + 1);
+      if (key === 'SUMMARY') current.summary = value;
+      else if (key === 'DESCRIPTION') current.description = value;
+      else if (key === 'LOCATION') current.location = value;
+      else if (key === 'UID') current.uid = value;
+      else if (key === 'DTSTART') current.start = parseICSDate(value);
+      else if (key === 'DTEND') current.end = parseICSDate(value);
+    }
+  }
+  return events;
+}
+
+function parseICSDate(str) {
+  if (!str) return null;
+  const isUTC = str.endsWith('Z');
+  const clean = str.replace('Z', '');
+  if (clean.length === 8) {
+    const y = parseInt(clean.slice(0, 4), 10), m = parseInt(clean.slice(4, 6), 10), d = parseInt(clean.slice(6, 8), 10);
+    return new Date(y, m - 1, d, 12, 0, 0).toISOString();
+  }
+  if (clean.length >= 15 && clean.includes('T')) {
+    const y = parseInt(clean.slice(0, 4), 10), m = parseInt(clean.slice(4, 6), 10), d = parseInt(clean.slice(6, 8), 10);
+    const h = parseInt(clean.slice(9, 11), 10), min = parseInt(clean.slice(11, 13), 10);
+    if (isUTC) return new Date(Date.UTC(y, m - 1, d, h, min)).toISOString();
+    return new Date(y, m - 1, d, h, min).toISOString();
+  }
+  const d = new Date(clean);
+  return isNaN(d) ? null : d.toISOString();
+}
+
+function detectarTipoICS(summary, description) {
+  const text = ((summary || '') + ' ' + (description || '')).toLowerCase();
+  if (text.includes('vuelo') || text.includes('flight') || text.includes('iberia') || text.includes('ryanair') || text.includes('vueling')) return 'vuelo';
+  if (text.includes('hotel') || text.includes('alojamiento') || text.includes('booking') || text.includes('airbnb')) return 'hotel';
+  if (text.includes('tren') || text.includes('renfe') || text.includes('ave')) return 'tren';
+  if (text.includes('bus') || text.includes('autobús')) return 'bus';
+  if (text.includes('barco') || text.includes('ferry') || text.includes('crucero')) return 'barco';
+  if (text.includes('restaurante') || text.includes('comida') || text.includes('cena') || text.includes('lunch') || text.includes('dinner')) return 'restaurante';
+  if (text.includes('actividad') || text.includes('tour') || text.includes('visita') || text.includes('entradas')) return 'actividad';
+  return 'otros';
+}
+
+async function procesarICS(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const text = await file.text();
+  const eventos = parseICS(text);
+  if (!eventos.length) { alert('No se encontraron eventos en el archivo .ics'); input.value = ''; return; }
+
+  const listaHtml = eventos.map((ev, i) => `
+    <div class="item" style="align-items:flex-start;margin-bottom:8px">
+      <input type="checkbox" id="ics-chk-${i}" checked style="width:24px;height:24px;accent-color:var(--accent);margin-top:2px;flex-shrink:0">
+      <div class="body" style="margin-left:8px">
+        <p class="title">${escHTML(ev.summary || 'Sin título')}</p>
+        <p class="meta">${escHTML(fmtDate(ev.start))} ${escHTML(horaDesdeISO(ev.start))}${ev.location ? ' · ' + escHTML(ev.location) : ''}</p>
+        ${ev.description ? `<p class="meta">${escHTML(ev.description.substring(0, 120))}${ev.description.length > 120 ? '...' : ''}</p>` : ''}
+      </div>
+    </div>
+  `).join('');
+
+  abrirModal(`Importar ${eventos.length} evento(s)`, `
+    <p style="color:var(--text-muted);font-size:.9rem;margin-bottom:10px">Selecciona los que quieres añadir a este viaje:</p>
+    <div style="max-height:50vh;overflow-y:auto">${listaHtml}</div>
+  `, async () => {
+    let importados = 0;
+    for (let i = 0; i < eventos.length; i++) {
+      if ($('#ics-chk-' + i).checked) {
+        const ev = eventos[i];
+        await db.eventos.add({
+          viaje_id: currentViajeId,
+          fecha_hora: ev.start,
+          fecha_dia: fmtDate(ev.start),
+          tipo: detectarTipoICS(ev.summary, ev.description),
+          titulo: ev.summary || 'Evento importado',
+          notas: [ev.description, ev.location].filter(Boolean).join(' · ')
+        });
+        importados++;
+      }
+    }
+    cerrarModalDirecto();
+    alert(`${importados} evento(s) importados`);
+    await renderTab();
+  });
+  input.value = '';
+}
+
 /* ---------- Export / Import ---------- */
 async function exportarTodo() {
   const data = {
