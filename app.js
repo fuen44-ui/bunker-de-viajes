@@ -137,6 +137,7 @@ function ensurePassword() {
 async function llamarClaude(contentBlocks, max_tokens = 1200) {
   const apiKey = await getConfig('claude_api_key');
   const model = await getConfig('claude_model') || 'claude-3-haiku-20240307';
+  const proxy = await getConfig('claude_proxy');
   if (!apiKey) throw new Error('Configura tu API key de Claude primero');
 
   const body = {
@@ -145,7 +146,8 @@ async function llamarClaude(contentBlocks, max_tokens = 1200) {
     messages: [{ role: 'user', content: contentBlocks }]
   };
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const url = proxy || 'https://api.anthropic.com/v1/messages';
+  const res = await fetch(url, {
     method: 'POST',
     headers: {
       'x-api-key': apiKey,
@@ -1356,8 +1358,9 @@ async function borrarTodo() {
 /* ---------- Validación API Key Claude ---------- */
 async function validarClaveAPI(key) {
   if (!key) return { ok: false, msg: 'Sin key' };
+  const proxy = await getConfig('claude_proxy');
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch(proxy || 'https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'x-api-key': key,
@@ -1371,7 +1374,7 @@ async function validarClaveAPI(key) {
     if (!res.ok) return { ok: false, msg: `Error ${res.status}` };
     return { ok: true, msg: 'Key activa' };
   } catch (e) {
-    return { ok: false, msg: 'Sin conexión' };
+    return { ok: false, msg: proxy ? 'Proxy no responde' : 'Sin conexión (CORS bloqueado)' };
   }
 }
 
@@ -1391,7 +1394,7 @@ async function requierePIN() {
 }
 
 function mostrarConfigIA() {
-  Promise.all([getConfig('claude_api_key'), getConfig('claude_model')]).then(async ([key, model]) => {
+  Promise.all([getConfig('claude_api_key'), getConfig('claude_model'), getConfig('claude_proxy')]).then(async ([key, model, proxy]) => {
     const check = key ? await validarClaveAPI(key) : { ok: false, msg: 'Sin key' };
     const statusColor = check.ok ? 'var(--success)' : 'var(--danger)';
     const statusDot = check.ok ? '🟢' : '🔴';
@@ -1412,6 +1415,9 @@ function mostrarConfigIA() {
         <option value="claude-3-haiku-20240307" ${model !== 'claude-3-sonnet-20241022' ? 'selected' : ''}>Claude 3 Haiku (rápido/barato)</option>
         <option value="claude-3-sonnet-20241022" ${model === 'claude-3-sonnet-20241022' ? 'selected' : ''}>Claude 3.5 Sonnet (más capaz)</option>
       </select>
+      <label>Proxy URL (solo si da error CORS)</label>
+      <input id="cfg-proxy" placeholder="https://tu-proxy.workers.dev" value="${escAttr(proxy || '')}">
+      <p style="font-size:.7rem;color:var(--text-muted);margin-top:4px">Si pones un proxy, la app enviará las peticiones ahí en vez de directamente a Anthropic.</p>
       <div style="display:flex;gap:8px;margin-top:12px">
         <button class="btn btn-sm btn-secondary" onclick="probarKeyClaude()">🧪 Probar key</button>
       </div>
@@ -1420,12 +1426,14 @@ function mostrarConfigIA() {
       </p>
     `, async () => {
       const nuevaKey = $('#cfg-key').value.trim();
+      const nuevoProxy = $('#cfg-proxy').value.trim();
       if (nuevaKey) {
         const check = await validarClaveAPI(nuevaKey);
         if (!check.ok) { alert(check.msg + '\n\nLa key no se ha guardado.'); return; }
       }
       await setConfig('claude_api_key', nuevaKey);
       await setConfig('claude_model', $('#cfg-model').value);
+      await setConfig('claude_proxy', nuevoProxy);
       cerrarModalDirecto();
       alert('✅ Configuración guardada');
     });
@@ -1434,6 +1442,7 @@ function mostrarConfigIA() {
 
 async function probarKeyClaude() {
   const key = $('#cfg-key').value.trim();
+  const proxy = $('#cfg-proxy').value.trim();
   const status = $('#cfg-status');
   status.textContent = '🔄 Comprobando...';
   status.style.color = 'var(--text-muted)';
